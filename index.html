@@ -2357,7 +2357,7 @@ function initMap(){
   });
   if(bounds.length){ map.fitBounds(bounds,{padding:[28,28]}); }
   setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} }, 250);
-  mapLiveTimer = setInterval(updateLiveMapPositions, 4500);
+  mapLiveTimer = setInterval(updateLiveMapPositions, 9000);
 }
 
 function refreshLiveMap(showToast = true){
@@ -2829,7 +2829,7 @@ function initMap(){
   });
   if(bounds.length){ map.fitBounds(bounds,{padding:[30,30]}); }
   setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} },250);
-  mapLiveTimer = setInterval(updateLiveMapPositions,3800);
+  mapLiveTimer = setInterval(updateLiveMapPositions,9000);
 }
 
 function refreshLiveMap(showToast = true){
@@ -2925,15 +2925,7 @@ document.addEventListener('DOMContentLoaded', function(){
       @media(min-width:800px){#bottomNavSafe{display:none}}
     `;
     document.head.appendChild(style);
-    const nav = document.createElement('div');
-    nav.id='bottomNavSafe';
-    nav.innerHTML = `
-      <button class="sm" onclick="navigate('dashboard')">Home</button>
-      <button class="sm" onclick="navigate('calculator')">Calc</button>
-      <button class="sm" onclick="navigate('schedules')">Trips</button>
-      <button class="sm" onclick="navigate('fares')">Fares</button>
-    `;
-    document.body.appendChild(nav);
+    // V112: bottom mobile tab removed for better stability and screen space.
 
     // 1. Admin enhancements observer
     const adminObserver = new MutationObserver(()=>{
@@ -3632,7 +3624,7 @@ document.addEventListener('DOMContentLoaded', function(){
     });
     if(bounds.length) map.fitBounds(bounds,{padding:[30,30]});
     setTimeout(function(){ try{ map.invalidateSize(); }catch(e){} },250);
-    mapLiveTimer = setInterval(updateLiveMapPositions,3600);
+    mapLiveTimer = setInterval(updateLiveMapPositions,9000);
   };
   window.refreshLiveMap = function refreshLiveMap(showToast){
     if(showToast === undefined) showToast = true;
@@ -3666,7 +3658,7 @@ document.addEventListener('DOMContentLoaded', function(){
         if(!vesselMarkers || !vesselMarkers.length) return;
         v108.autoFocusIndex = (v108.autoFocusIndex + 1) % vesselMarkers.length;
         selectVessel(vesselMarkers[v108.autoFocusIndex].data.key,true);
-      },5200);
+      },12000);
       notify('Auto focus on'); focusNextVessel();
     }else{
       if(v108.autoFocusTimer) clearInterval(v108.autoFocusTimer); v108.autoFocusTimer=null; notify('Auto focus off');
@@ -4779,189 +4771,71 @@ document.addEventListener('DOMContentLoaded', function(){
 </script>
 
 
-<!-- OCEANJET PORTDESK V111: FULLY ANIMATED SYSTEM UI LAYER -->
-<style id="ojV111AnimatedSystemUI">
-  html.oj-v111-animated-ui{scroll-behavior:smooth;--v111-cyan:#22d3ee;--v111-blue:#38bdf8;--v111-violet:#8b5cf6;--v111-green:#34d399;--v111-warn:#f59e0b;--v111-danger:#fb7185;--v111-glow:0 0 28px rgba(34,211,238,.22),0 0 48px rgba(244,63,94,.14)}
-  html.oj-v111-animated-ui body{background:linear-gradient(135deg,#030714 0%,var(--bg-base) 45%,#111827 100%)!important;isolation:isolate;padding-bottom:76px}
-  html.oj-v111-animated-ui body:after{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:linear-gradient(rgba(34,211,238,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(244,63,94,.035) 1px,transparent 1px);background-size:42px 42px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.82),rgba(0,0,0,.15));animation:ojGridDrift 22s linear infinite}
-  @keyframes ojGridDrift{from{background-position:0 0,0 0}to{background-position:84px 168px,168px 84px}}
-  #ojV111Particles{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden}
-  .oj-v111-particle{position:absolute;width:4px;height:4px;border-radius:999px;background:rgba(34,211,238,.75);box-shadow:0 0 14px rgba(34,211,238,.85);animation:ojFloatParticle var(--dur,14s) linear infinite;opacity:.8}
-  @keyframes ojFloatParticle{0%{transform:translate3d(var(--x,0),105vh,0) scale(.55);opacity:0}12%{opacity:.82}88%{opacity:.65}100%{transform:translate3d(calc(var(--x,0) + var(--dx,0px)),-10vh,0) scale(1.2);opacity:0}}
-  .oj-v111-ribbon{max-width:520px;margin:10px auto 0;padding:0 16px;position:relative;z-index:45;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
-  .oj-v111-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(34,211,238,.28);background:linear-gradient(135deg,rgba(34,211,238,.12),rgba(139,92,246,.08));box-shadow:var(--v111-glow);backdrop-filter:blur(14px);border-radius:999px;padding:6px 10px;font-size:.66rem;font-weight:800;color:var(--text);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
-  .oj-v111-dot{width:8px;height:8px;border-radius:50%;background:var(--v111-green);box-shadow:0 0 14px var(--v111-green);animation:ojPulseDot 1.6s ease-in-out infinite}
-  @keyframes ojPulseDot{50%{transform:scale(1.45);opacity:.55}}
-  .oj-v111-hud{max-width:520px;margin:8px auto 0;padding:0 16px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;position:relative;z-index:45;pointer-events:none}
-  .oj-v111-hud div{border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(16,22,48,.58);backdrop-filter:blur(18px);box-shadow:0 10px 34px rgba(0,0,0,.22),inset 0 0 18px rgba(34,211,238,.045);padding:8px 7px;text-align:center;color:var(--text2);font-size:.58rem;text-transform:uppercase;letter-spacing:.07em;overflow:hidden;position:relative}
-  .oj-v111-hud b{display:block;color:var(--text);font-size:.82rem;letter-spacing:0;margin-top:2px}
-  .oj-v111-hud div:before{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent,rgba(255,255,255,.10),transparent);transform:translateX(-130%);animation:ojSweep 4.6s ease-in-out infinite}
-  @keyframes ojSweep{30%,100%{transform:translateX(130%)}}
-  html.oj-v111-animated-ui .app{filter:drop-shadow(0 24px 60px rgba(0,0,0,.32))}
-  html.oj-v111-animated-ui .header{border:1px solid rgba(255,255,255,.08);border-top:none;background:linear-gradient(135deg,rgba(26,31,58,.84),rgba(7,11,25,.72));box-shadow:0 10px 36px rgba(0,0,0,.24),0 0 0 1px rgba(34,211,238,.06) inset;animation:ojHeaderGlow 5s ease-in-out infinite;backdrop-filter:blur(22px) saturate(130%)}
-  @keyframes ojHeaderGlow{0%,100%{box-shadow:0 10px 36px rgba(0,0,0,.24),0 0 0 1px rgba(34,211,238,.08) inset}50%{box-shadow:0 14px 46px rgba(34,211,238,.14),0 0 0 1px rgba(244,63,94,.14) inset}}
-  html.oj-v111-animated-ui .brand{position:relative;text-shadow:0 0 24px rgba(244,63,94,.24);animation:ojBrandBreath 3.8s ease-in-out infinite}
-  html.oj-v111-animated-ui .brand:after{content:"";position:absolute;left:0;right:0;bottom:-3px;height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--v111-cyan),transparent);animation:ojBrandLine 3s ease-in-out infinite}
-  @keyframes ojBrandBreath{50%{filter:drop-shadow(0 0 14px rgba(244,63,94,.35))}}
-  @keyframes ojBrandLine{50%{opacity:.4;transform:scaleX(.6)}}
-  html.oj-v111-animated-ui .view.active{animation:ojViewFade .35s ease both}
-  @keyframes ojViewFade{from{opacity:.3;transform:translateY(12px) scale(.99)}to{opacity:1;transform:none}}
-  html.oj-v111-animated-ui .view.active>.card,html.oj-v111-animated-ui .view.active>.grid2,html.oj-v111-animated-ui .view.active>.stat-box{animation:ojCardRise .56s cubic-bezier(.16,1,.3,1) both;animation-delay:var(--v111-delay,0ms)}
-  @keyframes ojCardRise{from{opacity:0;transform:translateY(18px) scale(.985);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}
-  html.oj-v111-animated-ui .card,html.oj-v111-animated-ui .stat-box,html.oj-v111-animated-ui .trip-row,html.oj-v111-animated-ui .drawer-item{position:relative;overflow:hidden;transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease,background .22s ease}
-  html.oj-v111-animated-ui .card{background:linear-gradient(145deg,rgba(26,31,58,.86),rgba(16,22,48,.72));border-color:rgba(255,255,255,.09);box-shadow:0 16px 44px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(18px)}
-  html.oj-v111-animated-ui .card:before,html.oj-v111-animated-ui .stat-box:before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(130deg,rgba(34,211,238,.48),rgba(244,63,94,.20),transparent 55%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:.42;pointer-events:none}
-  html.oj-v111-animated-ui .card:hover,html.oj-v111-animated-ui .stat-box:hover{transform:translateY(-4px);box-shadow:0 18px 54px rgba(0,0,0,.38),0 0 30px rgba(34,211,238,.12)}
-  html.oj-v111-animated-ui .card-header{letter-spacing:.01em;text-shadow:0 0 18px rgba(34,211,238,.16)}
-  html.oj-v111-animated-ui .stat-value{filter:drop-shadow(0 0 14px rgba(244,63,94,.28));animation:ojSoftPulse 4s ease-in-out infinite}
-  @keyframes ojSoftPulse{50%{filter:drop-shadow(0 0 22px rgba(34,211,238,.22))}}
-  html.oj-v111-animated-ui input,html.oj-v111-animated-ui select,html.oj-v111-animated-ui textarea{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease;background-color:rgba(16,22,48,.82)}
-  html.oj-v111-animated-ui input:focus,html.oj-v111-animated-ui select:focus,html.oj-v111-animated-ui textarea:focus{transform:translateY(-1px);box-shadow:0 0 0 3px rgba(34,211,238,.14),0 0 24px rgba(34,211,238,.08);border-color:rgba(34,211,238,.65)}
-  html.oj-v111-animated-ui button{position:relative;overflow:hidden;transform:translateZ(0)}
-  html.oj-v111-animated-ui button:after{content:"";position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.26);top:var(--ripple-y,50%);left:var(--ripple-x,50%);transform:translate(-50%,-50%) scale(0);opacity:0;pointer-events:none}
-  html.oj-v111-animated-ui button.oj-ripple:after{animation:ojRipple .55s ease-out}
-  @keyframes ojRipple{0%{transform:translate(-50%,-50%) scale(.2);opacity:.65}100%{transform:translate(-50%,-50%) scale(7);opacity:0}}
-  html.oj-v111-animated-ui button.primary{box-shadow:0 10px 26px rgba(244,63,94,.32),0 0 18px rgba(251,146,60,.10)}
-  html.oj-v111-animated-ui .side-drawer{background:linear-gradient(180deg,rgba(7,11,25,.96),rgba(30,43,94,.92));box-shadow:18px 0 60px rgba(0,0,0,.55),inset -1px 0 0 rgba(34,211,238,.16)}
-  html.oj-v111-animated-ui .drawer-item.active{box-shadow:0 8px 24px rgba(34,211,238,.13),0 0 0 1px rgba(34,211,238,.20) inset;background:linear-gradient(135deg,rgba(34,211,238,.11),rgba(244,63,94,.10))}
-  html.oj-v111-animated-ui .receipt{animation:ojReceiptOpen .65s cubic-bezier(.16,1,.3,1);box-shadow:0 0 46px rgba(34,211,238,.18),0 0 40px rgba(244,63,94,.25)}
-  @keyframes ojReceiptOpen{from{opacity:0;transform:translateY(20px) rotateX(20deg) scale(.98)}to{opacity:1;transform:none}}
-  html.oj-v111-animated-ui .result-total{animation:ojTotalPop .55s cubic-bezier(.16,1,.3,1)}
-  @keyframes ojTotalPop{0%{transform:scale(.92);opacity:.1}65%{transform:scale(1.05)}100%{transform:scale(1);opacity:1}}
-  .oj-v111-toast{position:fixed;left:50%;bottom:92px;z-index:9999;transform:translateX(-50%);max-width:92vw;border-radius:16px;border:1px solid rgba(34,211,238,.35);background:linear-gradient(135deg,rgba(7,11,25,.92),rgba(30,43,94,.86));box-shadow:0 18px 50px rgba(0,0,0,.45),0 0 28px rgba(34,211,238,.12);backdrop-filter:blur(18px);padding:10px 14px;font-size:.78rem;font-weight:800;color:var(--text);animation:ojToastUp .35s ease both}
-  @keyframes ojToastUp{from{opacity:0;transform:translate(-50%,16px) scale(.96)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
-  .oj-v111-scanline{position:fixed;inset:0;pointer-events:none;z-index:1000;background:linear-gradient(to bottom,transparent 0%,rgba(34,211,238,.08) 50%,transparent 100%);height:120px;animation:ojScanLine 7s linear infinite;mix-blend-mode:screen;opacity:.45}
-  @keyframes ojScanLine{from{transform:translateY(-140px)}to{transform:translateY(calc(100vh + 140px))}}
-  html.oj-v111-animated-ui #liveMap,html.oj-v111-animated-ui .ar-wrap{box-shadow:0 0 0 1px rgba(34,211,238,.20),0 0 35px rgba(34,211,238,.10);position:relative}
-  html.oj-v111-animated-ui #bottomNavSafe{border:1px solid rgba(255,255,255,.08);border-bottom:none;border-radius:18px 18px 0 0;background:linear-gradient(135deg,rgba(16,22,48,.9),rgba(7,11,25,.82));box-shadow:0 -14px 44px rgba(0,0,0,.35);backdrop-filter:blur(18px)}
-  html.oj-v111-animated-ui #bottomNavSafe button{font-weight:800;letter-spacing:.02em}
-  @media (prefers-reduced-motion:reduce){html.oj-v111-animated-ui *,html.oj-v111-animated-ui *:before,html.oj-v111-animated-ui *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.oj-v111-scanline,#ojV111Particles{display:none!important}}
+
+<!-- OCEANJET PORTDESK V112: STABLE PERFORMANCE UI PATCH -->
+<style id="ojV112StablePerformanceUI">
+  html, body{scroll-behavior:auto!important;}
+  body{padding-bottom:0!important;}
+  body::before{animation:none!important;transform:none!important;}
+  #bottomNavSafe{display:none!important;visibility:hidden!important;pointer-events:none!important;height:0!important;padding:0!important;margin:0!important;border:0!important;}
+  #ojV111Particles,#ojV111Ribbon,#ojV111HUD,#ojV111Scanline,#ojV111MiniBadge,.oj-v111-scanline,.oj-v111-toast{display:none!important;visibility:hidden!important;}
+  .card:hover,.stat-box:hover{transform:none!important;}
+  .card,.stat-box,.trip-row,.drawer-item,button,input,select,textarea{transition:border-color .12s ease,box-shadow .12s ease,background-color .12s ease!important;}
+  .brand,.header,.stat-value,.receipt,.result-total,.view.active,.view.active>.card,.view.active>.grid2,.view.active>.stat-box{animation:none!important;filter:none!important;}
+  .header{box-shadow:0 8px 24px rgba(0,0,0,.18)!important;}
+  .app{filter:none!important;}
+  .view{padding-bottom:18px!important;}
+  .ai-float-btn{bottom:18px!important;}
+  .chat-panel{bottom:82px!important;}
+  .receipt::before{animation:none!important;display:none!important;}
+  .v110-scanline{animation:v112SoftScan 7s ease-in-out infinite!important;opacity:.35!important;}
+  @keyframes v112SoftScan{0%,100%{top:10%}50%{top:84%}}
+  @media (max-width:560px){
+    .app{padding-bottom:4px!important;}
+    .view{padding-bottom:20px!important;}
+    .ai-float-btn{width:52px!important;height:52px!important;bottom:16px!important;right:16px!important;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *,*:before,*:after{animation:none!important;transition:none!important;scroll-behavior:auto!important;}
+  }
 </style>
-<script id="ojV111AnimatedSystemScript">
+<script id="ojV112StablePerformanceScript">
 (function(){
   'use strict';
-  if(window.__OJ_V111_ANIMATED_SYSTEM_UI__) return;
-  window.__OJ_V111_ANIMATED_SYSTEM_UI__ = true;
-  document.documentElement.classList.add('oj-v111-animated-ui');
-  function ensure(id, tag, parent){
-    var el = document.getElementById(id);
-    if(!el){ el = document.createElement(tag || 'div'); el.id = id; (parent || document.body).appendChild(el); }
-    return el;
-  }
-  function makeParticles(){
-    var wrap = ensure('ojV111Particles','div',document.body);
-    if(wrap.dataset.ready) return;
-    wrap.dataset.ready = '1';
-    for(var i=0;i<26;i++){
-      var p=document.createElement('span');
-      p.className='oj-v111-particle';
-      p.style.setProperty('--x', Math.round(Math.random()*100)+'vw');
-      p.style.setProperty('--dx', Math.round((Math.random()*120)-60)+'px');
-      p.style.setProperty('--dur', (10 + Math.random()*14).toFixed(1)+'s');
-      p.style.animationDelay = (-Math.random()*18).toFixed(1)+'s';
-      if(i%3===0){p.style.background='rgba(244,63,94,.72)';p.style.boxShadow='0 0 14px rgba(244,63,94,.75)';}
-      if(i%5===0){p.style.width='2px';p.style.height='18px';p.style.borderRadius='8px';}
-      wrap.appendChild(p);
-    }
-  }
-  function installRibbon(){
-    if(document.getElementById('ojV111Ribbon')) return;
-    var app = document.querySelector('.app');
-    if(!app) return;
-    var ribbon=document.createElement('div');
-    ribbon.id='ojV111Ribbon';
-    ribbon.className='oj-v111-ribbon';
-    ribbon.innerHTML='<span class="oj-v111-pill"><span class="oj-v111-dot"></span> V111 Animated System UI</span><span class="oj-v111-pill" id="ojV111ClockPill">Syncing</span>';
-    app.parentNode.insertBefore(ribbon, app);
-    var hud=document.createElement('div');
-    hud.id='ojV111HUD';
-    hud.className='oj-v111-hud';
-    hud.innerHTML='<div>Mode<b>Ops</b></div><div>UI<b>Animated</b></div><div>Status<b>Live</b></div>';
-    app.parentNode.insertBefore(hud, app);
-    setInterval(function(){
-      var c=document.getElementById('ojV111ClockPill');
-      if(c) c.textContent = new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});
-    },1000);
-  }
-  function installScanline(){
-    if(!document.getElementById('ojV111Scanline')){
-      var s=document.createElement('div'); s.id='ojV111Scanline'; s.className='oj-v111-scanline'; document.body.appendChild(s);
-    }
-  }
-  function decorateCards(){
-    document.querySelectorAll('.view.active > .card, .view.active > .grid2, .view.active > .stat-box').forEach(function(el,idx){ el.style.setProperty('--v111-delay', Math.min(idx*55,360)+'ms'); });
-    document.querySelectorAll('.card:not([data-v111]), .stat-box:not([data-v111]), .trip-row:not([data-v111])').forEach(function(el){
-      el.dataset.v111='1';
-      el.addEventListener('pointermove',function(e){
-        var r=el.getBoundingClientRect();
-        el.style.setProperty('--mx', ((e.clientX-r.left)/Math.max(r.width,1)*100).toFixed(1)+'%');
-        el.style.setProperty('--my', ((e.clientY-r.top)/Math.max(r.height,1)*100).toFixed(1)+'%');
-      },{passive:true});
+  if(window.__OJ_V112_STABLE_PERFORMANCE__) return;
+  window.__OJ_V112_STABLE_PERFORMANCE__ = true;
+  function removeHeavyUi(){
+    try{ document.documentElement.classList.remove('oj-v111-animated-ui'); }catch(e){}
+    ['bottomNavSafe','ojV111Particles','ojV111Ribbon','ojV111HUD','ojV111Scanline','ojV111MiniBadge'].forEach(function(id){
+      var el=document.getElementById(id);
+      if(el && el.parentNode) el.parentNode.removeChild(el);
+    });
+    document.querySelectorAll('.oj-v111-toast,.oj-v111-scanline').forEach(function(el){
+      if(el && el.parentNode) el.parentNode.removeChild(el);
     });
   }
-  function installRipples(){
-    if(window.__OJ_V111_RIPPLES__) return;
-    window.__OJ_V111_RIPPLES__ = true;
-    document.addEventListener('pointerdown', function(e){
-      var btn=e.target && e.target.closest ? e.target.closest('button') : null;
-      if(!btn) return;
-      var r=btn.getBoundingClientRect();
-      btn.style.setProperty('--ripple-x',(e.clientX-r.left)+'px');
-      btn.style.setProperty('--ripple-y',(e.clientY-r.top)+'px');
-      btn.classList.remove('oj-ripple');
-      void btn.offsetWidth;
-      btn.classList.add('oj-ripple');
-      setTimeout(function(){btn.classList.remove('oj-ripple');},600);
-    },{passive:true});
-  }
-  function installViewHook(){
-    if(typeof window.showView === 'function' && !window.showView.__v111Wrapped){
-      var original = window.showView;
-      window.showView = function(name){
-        document.body.dataset.ojView = name || '';
-        var result = original.apply(this, arguments);
-        requestAnimationFrame(function(){decorateCards(); flashStatus((name || 'view').toUpperCase()+' loaded');});
-        return result;
+  function patchToast(){
+    if(typeof window.toast === 'function' && !window.toast.__v112Stable){
+      var originalToast = window.toast;
+      window.toast = function(msg){
+        removeHeavyUi();
+        return originalToast.call(this, msg);
       };
-      window.showView.__v111Wrapped = true;
-    }
-  }
-  function flashStatus(text){
-    if(!document.body) return;
-    var el=document.createElement('div');
-    el.className='oj-v111-toast';
-    el.textContent='⚡ '+text;
-    document.body.appendChild(el);
-    setTimeout(function(){el.style.opacity='0'; el.style.transform='translate(-50%,18px) scale(.96)';},1000);
-    setTimeout(function(){if(el && el.parentNode) el.remove();},1450);
-  }
-  function addSystemBadge(){
-    var headerRight=document.querySelector('.header-right');
-    if(headerRight && !document.getElementById('ojV111MiniBadge')){
-      var b=document.createElement('span');
-      b.id='ojV111MiniBadge';
-      b.className='role-badge';
-      b.textContent='V111 UI';
-      headerRight.insertBefore(b, headerRight.firstChild);
+      window.toast.__v112Stable = true;
     }
   }
   function boot(){
-    makeParticles();
-    installRibbon();
-    installScanline();
-    addSystemBadge();
-    installRipples();
-    installViewHook();
-    decorateCards();
-    var mo = new MutationObserver(function(){decorateCards(); addSystemBadge(); installViewHook();});
-    mo.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','style']});
-    setTimeout(function(){flashStatus('Animated UI online');},700);
+    removeHeavyUi();
+    patchToast();
+    var mo = new MutationObserver(function(){ removeHeavyUi(); patchToast(); });
+    mo.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['class','style']});
+    window.addEventListener('pageshow', removeHeavyUi, {passive:true});
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once:true});
   else boot();
 })();
 </script>
-<!-- /OCEANJET PORTDESK V111 -->
+<!-- /OCEANJET PORTDESK V112 -->
 
 </body>
 </html>
