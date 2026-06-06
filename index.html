@@ -5821,5 +5821,90 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 
+
+<!-- OCEANJET V123 MOBILE DRAWER SCROLL FIX - no feature changes -->
+<style id="oj-v123-drawer-scroll-fix">
+  /* Fix: mobile drawer menu can now scroll on small screens. */
+  .side-drawer{
+    height:100vh!important;
+    height:100dvh!important;
+    max-height:100vh!important;
+    max-height:100dvh!important;
+    overflow:hidden!important;
+    display:flex!important;
+    flex-direction:column!important;
+    padding-top:calc(22px + env(safe-area-inset-top,0px))!important;
+    padding-bottom:calc(12px + env(safe-area-inset-bottom,0px))!important;
+  }
+  .drawer-menu{
+    flex:1 1 auto!important;
+    min-height:0!important;
+    overflow-y:auto!important;
+    overflow-x:hidden!important;
+    -webkit-overflow-scrolling:touch!important;
+    overscroll-behavior:contain!important;
+    padding-top:44px!important;
+    padding-right:3px!important;
+    padding-bottom:96px!important;
+    margin-top:0!important;
+    touch-action:pan-y!important;
+    scrollbar-width:thin;
+  }
+  .drawer-item,
+  .oj122-nav-group{
+    flex:0 0 auto!important;
+  }
+  .drawer-logout{
+    flex:0 0 auto!important;
+    position:sticky!important;
+    bottom:calc(8px + env(safe-area-inset-bottom,0px))!important;
+    z-index:2!important;
+    margin-top:8px!important;
+  }
+  .drawer-close{
+    z-index:4!important;
+  }
+  @media(max-height:720px){
+    .drawer-item{padding:11px 14px!important;font-size:.92rem!important}
+    .drawer-item i{font-size:1.05rem!important}
+    .oj122-nav-group{padding:9px 10px 3px!important}
+    .drawer-menu{gap:5px!important;padding-bottom:112px!important}
+  }
+  @media(max-width:430px){
+    .side-drawer{width:min(78vw,310px)!important;left:min(-82vw,-320px)}
+    .side-drawer.open{left:0!important}
+  }
+</style>
+<script id="oj-v123-drawer-scroll-fix-script">
+(function(){
+  'use strict';
+  function byId(id){return document.getElementById(id)}
+  function normalizeDrawer(){
+    var drawer=byId('sideDrawer'), menu=byId('drawerMenu');
+    if(!drawer||!menu)return;
+    drawer.setAttribute('aria-label','Scrollable navigation menu');
+    menu.setAttribute('role','navigation');
+    menu.style.overflowY='auto';
+    menu.style.webkitOverflowScrolling='touch';
+    menu.style.touchAction='pan-y';
+  }
+  function wrapOnce(){
+    if(typeof window.toggleDrawer==='function'&&!window.toggleDrawer.__v123ScrollFix){
+      var oldToggle=window.toggleDrawer;
+      window.toggleDrawer=function(){var r=oldToggle.apply(this,arguments);setTimeout(normalizeDrawer,0);return r};
+      window.toggleDrawer.__v123ScrollFix=true;
+    }
+    if(typeof window.buildDrawerMenu==='function'&&!window.buildDrawerMenu.__v123ScrollFix){
+      var oldBuild=window.buildDrawerMenu;
+      window.buildDrawerMenu=function(){var r=oldBuild.apply(this,arguments);setTimeout(normalizeDrawer,0);return r};
+      window.buildDrawerMenu.__v123ScrollFix=true;
+    }
+  }
+  function boot(){normalizeDrawer();wrapOnce();setTimeout(normalizeDrawer,250)}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+})();
+</script>
+<!-- /OCEANJET V123 MOBILE DRAWER SCROLL FIX -->
+
 </body>
 </html>
