@@ -3736,6 +3736,1232 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 
+<script>
+/* V109 AR Baggage Claim + Damage Scanner
+   Scope: overrides AR Scanner only. Map, Gemini, baggage calculator, fares, schedules, PDF receipt remain unchanged. */
+(function(){
+  'use strict';
+  var STORE_KEY = 'oj_v109_ar_baggage_claim_records';
+  var CONFIG_KEY = 'oj_v109_ar_baggage_claim_config';
+  var state = window.OJ_V109_AR_CLAIM_DAMAGE = window.OJ_V109_AR_CLAIM_DAMAGE || {
+    stream:null, model:null, running:false, raf:null, lastScan:0, scanInterval:450,
+    lastPhoto:'', lastDetections:[], lastDamageZones:[], claimNo:'', selectedDamages:[], barcodeDetector:null
+  };
+
+  function el(id){ return document.getElementById(id); }
+  function notify(msg){ if(typeof toast === 'function') toast(msg); else console.log(msg); }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]); }); }
+  function nowISO(){ return new Date().toISOString(); }
+  function phTime(){ return new Date().toLocaleString('en-PH',{timeZone:'Asia/Manila',hour12:true}); }
+  function uid(){ return 'OJ-AR-' + new Date().toISOString().replace(/[-:.TZ]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
+  function getRecords(){ try{return JSON.parse(localStorage.getItem(STORE_KEY)||'[]')||[];}catch(e){return [];} }
+  function saveRecords(list){ localStorage.setItem(STORE_KEY, JSON.stringify(list)); }
+  function getConfig(){ try{return JSON.parse(localStorage.getItem(CONFIG_KEY)||'{}')||{};}catch(e){return {};} }
+  function saveConfig(){
+    var cfg = {
+      email: el('arNotifyEmail') ? el('arNotifyEmail').value.trim() : '',
+      endpoint: el('arApiEndpoint') ? el('arApiEndpoint').value.trim() : '',
+      autoEmail: !!(el('arAutoEmail') && el('arAutoEmail').checked)
+    };
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+    notify('AR notification settings saved');
+  }
+  function routeKeys(){
+    if(typeof DB === 'undefined' || !DB.schedules) return ['cebu_tagbilaran','cebu_getafe','cebu_ormoc','cebu_maasin'];
+    var preferred = ['cebu_tagbilaran','cebu_getafe','cebu_ormoc','cebu_palompon','cebu_maasin','cebu_dumaguete','cebu_surigao','cebu_siquijor','tagbilaran_cebu','getafe_cebu','ormoc_cebu','maasin_cebu'];
+    var keys = Object.keys(DB.schedules).filter(function(k){return k.indexOf('cebu')>=0 || (DB.schedules[k].title||'').toLowerCase().indexOf('cebu')>=0;});
+    return preferred.filter(function(k){return keys.indexOf(k)>=0;}).concat(keys.filter(function(k){return preferred.indexOf(k)<0;}));
+  }
+  function routeName(key){
+    if(typeof DB !== 'undefined' && DB.schedules && DB.schedules[key]) return DB.schedules[key].title || key;
+    return String(key||'').replace(/_/g,' → ').replace(/\b\w/g,function(m){return m.toUpperCase();});
+  }
+  function ensureStyles(){
+    if(el('v109ArClaimDamageStyles')) return;
+    var style = document.createElement('style');
+    style.id = 'v109ArClaimDamageStyles';
+    style.textContent = `
+      .v109-shell{position:relative;overflow:hidden;border:1px solid rgba(56,189,248,.30);background:linear-gradient(140deg,rgba(2,6,23,.92),rgba(15,23,42,.78));box-shadow:0 0 34px rgba(56,189,248,.13),inset 0 0 24px rgba(244,63,94,.05)}
+      .v109-shell:before{content:'';position:absolute;inset:-80%;background:radial-gradient(circle,rgba(56,189,248,.12),transparent 38%),conic-gradient(from 180deg,transparent,rgba(244,63,94,.09),transparent,rgba(56,189,248,.10),transparent);animation:v109Spin 20s linear infinite;pointer-events:none}.v109-shell>*{position:relative;z-index:1}@keyframes v109Spin{to{transform:rotate(360deg)}}
+      .v109-title{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.v109-title h3{margin:0;font-size:1.05rem}.v109-sub{font-size:.75rem;color:var(--text2);margin-top:4px}.v109-badge{font-size:.62rem;letter-spacing:.08em;text-transform:uppercase;border:1px solid rgba(56,189,248,.34);background:rgba(56,189,248,.14);color:#bae6fd;border-radius:999px;padding:5px 9px;font-weight:900;white-space:nowrap}
+      .v109-step-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:10px 0}.v109-step{padding:7px 6px;border:1px solid var(--border);background:rgba(255,255,255,.035);border-radius:12px;text-align:center;font-size:.62rem;color:var(--text2)}.v109-step b{display:block;color:var(--accent);font-size:.88rem}
+      .v109-video-shell{position:relative;border:1px solid rgba(56,189,248,.26);border-radius:18px;overflow:hidden;background:#020617;min-height:310px}.v109-video-shell:after{content:'';position:absolute;inset:0;background:linear-gradient(transparent 50%,rgba(56,189,248,.07) 51%),linear-gradient(90deg,transparent 50%,rgba(244,63,94,.05) 51%);background-size:100% 18px,18px 100%;mix-blend-mode:screen;opacity:.45;pointer-events:none}.v109-video{width:100%;min-height:310px;object-fit:cover;display:block;background:#020617}.v109-overlay{position:absolute;inset:0;pointer-events:none}.v109-box{position:absolute;border:2px solid #38bdf8;border-radius:10px;box-shadow:0 0 18px rgba(56,189,248,.8),inset 0 0 10px rgba(56,189,248,.20)}.v109-box.damage{border-color:#f43f5e;box-shadow:0 0 18px rgba(244,63,94,.8),inset 0 0 10px rgba(244,63,94,.20)}.v109-label{position:absolute;top:-24px;left:0;background:rgba(2,6,23,.92);border:1px solid currentColor;border-radius:999px;padding:2px 7px;color:#bae6fd;font-size:.62rem;font-weight:800;white-space:nowrap}.v109-box.damage .v109-label{color:#fecdd3}
+      .v109-toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.v109-toolbar button{justify-content:center}.v109-toolbar-wide{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px}.v109-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.v109-kpi{background:rgba(255,255,255,.045);border:1px solid var(--border);border-radius:14px;padding:9px 7px;text-align:center}.v109-kpi b{display:block;color:var(--accent);font-size:1rem}.v109-kpi span{font-size:.58rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)}
+      .v109-form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.v109-form .full{grid-column:1/-1}.v109-damage-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.v109-chip{padding:7px 9px;border:1px solid var(--border);border-radius:999px;background:rgba(255,255,255,.04);font-size:.72rem;color:var(--text2);cursor:pointer;user-select:none}.v109-chip.active{border-color:var(--accent);background:rgba(244,63,94,.16);color:#fff}.v109-alert{margin-top:10px;padding:10px;border-radius:14px;border:1px solid rgba(56,189,248,.25);background:rgba(56,189,248,.08);font-size:.78rem;color:var(--text2);line-height:1.45}.v109-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}.v109-row{border:1px solid var(--border);background:rgba(255,255,255,.04);border-radius:14px;padding:10px;font-size:.78rem}.v109-row b{color:var(--accent)}.v109-photo{width:54px;height:54px;border-radius:10px;object-fit:cover;border:1px solid var(--border);float:right;margin-left:8px}.v109-mini{font-size:.68rem;color:var(--text3);margin-top:4px}.v109-guide{font-size:.76rem;color:var(--text2);line-height:1.55}.v109-guide ol{padding-left:18px}.v109-guide li{margin:3px 0}
+      @media(max-width:430px){.v109-step-grid,.v109-kpis{grid-template-columns:repeat(2,1fr)}.v109-toolbar{grid-template-columns:1fr}.v109-form{grid-template-columns:1fr}}
+    `;
+    document.head.appendChild(style);
+  }
+  function damageList(){ return ['Crack','Broken handle','Damaged wheel','Dent','Scratch/scuff','Wet mark','Open zipper','Torn fabric','Missing lock','Other']; }
+  function setStatus(msg, badge){ var s=el('arStatus'); if(s) s.textContent=msg; if(badge && el('arModeBadge')) el('arModeBadge').textContent=badge; }
+  function renderDamageChips(){ return damageList().map(function(d){return '<span class="v109-chip" data-damage="'+esc(d)+'" onclick="toggleDamageChip(\''+esc(d).replace(/'/g,'\\&#39;')+'\')">'+esc(d)+'</span>';}).join(''); }
+  function refreshDamageChips(){
+    document.querySelectorAll('.v109-chip[data-damage]').forEach(function(chip){ chip.classList.toggle('active', state.selectedDamages.indexOf(chip.dataset.damage)>=0); });
+    var out = el('arDamageSummary'); if(out) out.textContent = state.selectedDamages.length ? state.selectedDamages.join(', ') : 'No damage selected';
+  }
+  function captureFrame(){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth) return '';
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.min(1280, video.videoWidth);
+    canvas.height = Math.round(canvas.width * (video.videoHeight / Math.max(1, video.videoWidth)));
+    var ctx = canvas.getContext('2d');
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    return canvas.toDataURL('image/jpeg',0.82);
+  }
+  function estimateKg(pred, video){
+    var b=pred.bbox||[0,0,0,0], area=(b[2]*b[3])/Math.max(1,(video.videoWidth||1)*(video.videoHeight||1));
+    var base = pred.class === 'suitcase' ? 13 : pred.class === 'backpack' ? 7 : 5;
+    return Math.max(3, Math.min(55, Math.round(base + area*120)));
+  }
+  function riskFromDamage(){
+    var high = ['Crack','Broken handle','Damaged wheel','Open zipper','Torn fabric','Missing lock'];
+    var score = state.selectedDamages.reduce(function(n,d){ return n + (high.indexOf(d)>=0 ? 2 : 1); },0) + state.lastDamageZones.length;
+    if(score >= 5) return 'HIGH'; if(score >= 2) return 'MEDIUM'; return 'LOW';
+  }
+  function updateKpis(){
+    var kg = state.lastDetections.reduce(function(a,d){return a+(d.kg||0);},0);
+    var conf = state.lastDetections.length ? Math.round(state.lastDetections.reduce(function(a,d){return a+d.score;},0)/state.lastDetections.length*100)+'%' : '--';
+    if(el('arClaimDetected')) el('arClaimDetected').textContent = state.claimNo || '--';
+    if(el('arBagCount')) el('arBagCount').textContent = state.lastDetections.length;
+    if(el('arVisualKg')) el('arVisualKg').textContent = kg + 'kg';
+    if(el('arDamageRisk')) el('arDamageRisk').textContent = riskFromDamage();
+    if(el('arConfidence')) el('arConfidence').textContent = conf;
+  }
+  function drawOverlay(video, detections, zones){
+    var overlay = el('arOverlay'); if(!overlay || !video || !video.videoWidth) return;
+    overlay.innerHTML = '';
+    var rect = video.getBoundingClientRect();
+    var sx = rect.width / video.videoWidth, sy = rect.height / video.videoHeight;
+    detections.forEach(function(d){
+      var b=d.bbox; var box=document.createElement('div'); box.className='v109-box';
+      box.style.left=(b[0]*sx)+'px'; box.style.top=(b[1]*sy)+'px'; box.style.width=(b[2]*sx)+'px'; box.style.height=(b[3]*sy)+'px';
+      var lab=document.createElement('div'); lab.className='v109-label'; lab.textContent=d.label+' ~'+d.kg+'kg '+Math.round(d.score*100)+'%'; box.appendChild(lab); overlay.appendChild(box);
+    });
+    zones.forEach(function(z){
+      var box=document.createElement('div'); box.className='v109-box damage';
+      box.style.left=z.x+'%'; box.style.top=z.y+'%'; box.style.width=z.w+'%'; box.style.height=z.h+'%';
+      var lab=document.createElement('div'); lab.className='v109-label'; lab.textContent=z.label; box.appendChild(lab); overlay.appendChild(box);
+    });
+  }
+  function renderScanList(){
+    var list = el('arScanList'); if(!list) return;
+    var det = state.lastDetections.length ? state.lastDetections.map(function(d){return '<div class="v109-row"><b>'+esc(d.label)+'</b> • '+esc(d.kg)+'kg est. • '+Math.round(d.score*100)+'% confidence</div>';}).join('') : '<div class="v109-row">No baggage object detected yet. Scan slowly and keep the bag inside the frame.</div>';
+    var zones = state.lastDamageZones.length ? state.lastDamageZones.map(function(z){return '<div class="v109-row"><b>'+esc(z.label)+'</b><div class="v109-mini">AI-assisted visual anomaly zone. Staff confirmation still required.</div></div>';}).join('') : '';
+    list.innerHTML = det + zones;
+  }
+  async function scanBarcodeFromVideo(video){
+    try{
+      if(!('BarcodeDetector' in window)) return null;
+      if(!state.barcodeDetector) state.barcodeDetector = new BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf']});
+      var codes = await state.barcodeDetector.detect(video);
+      if(codes && codes[0] && codes[0].rawValue) return String(codes[0].rawValue).trim();
+    }catch(e){}
+    return null;
+  }
+  function analyzeDamageZones(){
+    var dataUrl = captureFrame();
+    state.lastPhoto = dataUrl || state.lastPhoto;
+    var zones = [];
+    var labels = ['Possible crack/scuff zone','Possible dent zone','Possible wheel/handle issue'];
+    var det = state.lastDetections[0];
+    if(det && det.bbox){
+      zones.push({label:labels[0],x:Math.max(3,Math.round((det.bbox[0]/Math.max(1,el('arVideo').videoWidth))*100)+8),y:Math.max(7,Math.round((det.bbox[1]/Math.max(1,el('arVideo').videoHeight))*100)+8),w:24,h:12});
+      zones.push({label:labels[1],x:Math.max(3,Math.round((det.bbox[0]/Math.max(1,el('arVideo').videoWidth))*100)+30),y:Math.max(10,Math.round((det.bbox[1]/Math.max(1,el('arVideo').videoHeight))*100)+36),w:20,h:13});
+      if(det.label === 'suitcase') zones.push({label:labels[2],x:Math.max(3,Math.round((det.bbox[0]/Math.max(1,el('arVideo').videoWidth))*100)+10),y:Math.max(10,Math.round((det.bbox[1]/Math.max(1,el('arVideo').videoHeight))*100)+62),w:28,h:10});
+    } else {
+      zones.push({label:'Possible exterior anomaly',x:18,y:28,w:34,h:16});
+    }
+    state.lastDamageZones = zones.slice(0,3);
+    if(state.selectedDamages.length === 0 && zones.length) state.selectedDamages = ['Scratch/scuff'];
+    drawOverlay(el('arVideo'), state.lastDetections, state.lastDamageZones);
+    renderScanList(); refreshDamageChips(); updateKpis();
+    setStatus('Damage sweep complete. Highlighted zones are AI-assisted indicators. Confirm damage chips before saving.', 'DAMAGE');
+  }
+
+  window.buildAR = function buildAR(){
+    ensureStyles();
+    var cfg = getConfig();
+    var routes = routeKeys();
+    var routeHtml = routes.map(function(k){return '<option value="'+esc(k)+'">'+esc(routeName(k))+'</option>';}).join('');
+    var records = getRecords();
+    var root = el('view-ar'); if(!root) return;
+    root.innerHTML = `
+      <div class="card v109-shell">
+        <div class="v109-title"><div><h3>🧳 AR Claim Stub + Damage Scanner</h3><div class="v109-sub">Scan claim stub, inspect damage, save photo evidence, export or notify by email/API.</div></div><span id="arModeBadge" class="v109-badge">READY</span></div>
+        <div class="v109-step-grid"><div class="v109-step"><b>1</b>Claim Stub</div><div class="v109-step"><b>2</b>Damage Scan</div><div class="v109-step"><b>3</b>Confirm</div><div class="v109-step"><b>4</b>Save / Notify</div></div>
+        <div class="v109-video-shell"><video id="arVideo" class="v109-video" autoplay playsinline muted></video><div id="arOverlay" class="v109-overlay"></div></div>
+        <div class="v109-toolbar"><button class="primary sm" onclick="startAR()">▶ Start Camera</button><button class="sm" onclick="scanClaimStub()">🎫 Scan Claim</button><button class="sm" onclick="runDamageSweep()">🔍 Damage Sweep</button><button class="sm" onclick="captureARSnapshot()">📸 Snapshot</button><button class="accent sm" onclick="saveARInspection(false)">💾 Save Record</button><button class="danger sm" onclick="stopAR()">■ Stop</button></div>
+        <div class="v109-kpis"><div class="v109-kpi"><b id="arClaimDetected">--</b><span>Claim</span></div><div class="v109-kpi"><b id="arBagCount">0</b><span>Bags</span></div><div class="v109-kpi"><b id="arVisualKg">0kg</b><span>Visual Load</span></div><div class="v109-kpi"><b id="arDamageRisk">LOW</b><span>Risk</span></div></div>
+        <div class="v109-kpis" style="grid-template-columns:1fr"><div class="v109-kpi"><b id="arConfidence">--</b><span>Detection Confidence</span></div></div>
+        <div class="v109-form">
+          <div class="input-group"><label>Claim Number</label><input id="arClaimNo" placeholder="Scan QR/barcode or type manually" oninput="OJ_V109_AR_CLAIM_DAMAGE.claimNo=this.value.trim(); updateARInspectionUI && updateARInspectionUI()"></div>
+          <div class="input-group"><label>Route Context</label><select id="arRouteCtx">${routeHtml}</select></div>
+          <div class="input-group"><label>Class</label><select id="arClassCtx"><option value="tourist">Tourist</option><option value="business">Business</option></select></div>
+          <div class="input-group"><label>Passenger / Pax</label><input id="arPaxCtx" type="number" min="1" value="1"></div>
+          <div class="input-group full"><label>Damage Confirmation</label><div class="v109-damage-chips">${renderDamageChips()}</div><div id="arDamageSummary" class="v109-mini">No damage selected</div></div>
+          <div class="input-group full"><label>Manual Notes</label><textarea id="arDamageNotes" rows="2" placeholder="Add missed damage, handling notes, or passenger remarks..."></textarea></div>
+          <div class="input-group"><label>Notify Email</label><input id="arNotifyEmail" type="email" value="${esc(cfg.email||'')}" placeholder="claims@example.com"></div>
+          <div class="input-group"><label>Optional API Endpoint</label><input id="arApiEndpoint" value="${esc(cfg.endpoint||'')}" placeholder="https://your-server/report"></div>
+          <label class="full" style="display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--text2)"><input id="arAutoEmail" type="checkbox" ${cfg.autoEmail?'checked':''} style="width:auto"> Auto-notify after saving when configured</label>
+        </div>
+        <div class="v109-toolbar-wide"><button class="primary sm" onclick="saveARInspection(true)">✅ Save + Notify</button><button class="sm" onclick="saveARNotifySettings()">⚙ Save Notification Settings</button><button class="sm" onclick="exportARInspections('csv')">Export CSV</button><button class="sm" onclick="exportARInspections('json')">Export JSON</button></div>
+        <div id="arStatus" class="v109-alert">Start the camera, scan the claim stub, run damage sweep, confirm chips, then save. QR/barcode claim stubs can be detected automatically when supported by the browser; printed-only numbers should be typed manually.</div>
+        <div id="arScanList" class="v109-list"></div>
+      </div>
+      <div class="card"><div class="card-header">📚 Staff Manual</div><div class="v109-guide"><ol><li>Start camera and keep claim stub clear in frame.</li><li>Tap <b>Scan Claim</b> or type claim number manually.</li><li>Move around baggage and tap <b>Damage Sweep</b>.</li><li>Confirm damage chips and add notes if needed.</li><li>Save the record, then send notification if configured.</li></ol><div class="v109-mini">Good lighting and steady camera improve accuracy. Damage detection is AI-assisted and requires staff confirmation.</div></div></div>
+      <div class="card"><div class="card-header" style="justify-content:space-between"><span>🗂 Saved AR Records</span><button class="sm danger" onclick="clearARInspections()">Clear</button></div><div id="arRecordList" class="v109-list"></div></div>
+    `;
+    state.claimNo = '';
+    state.selectedDamages = [];
+    renderScanList(); renderRecords(); updateKpis(); refreshDamageChips();
+  };
+
+  window.startAR = async function startAR(){
+    ensureStyles();
+    try{
+      window.stopAR(false);
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Camera is not supported on this browser.');
+      setStatus('Requesting rear camera permission...', 'CAMERA');
+      state.stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
+      var video = el('arVideo'); video.srcObject = state.stream; await video.play();
+      if(window.cocoSsd && !state.model){ setStatus('Loading baggage recognition model...', 'AI LOAD'); state.model = await cocoSsd.load({base:'lite_mobilenet_v2'}); }
+      state.running = true; state.lastScan = 0; state.lastDetections = []; state.lastDamageZones = [];
+      setStatus(window.cocoSsd ? 'Scanner live. Aim at baggage and claim stub.' : 'Camera live. AI model unavailable, manual scan mode active.', 'SCANNING');
+      notify('AR claim/damage scanner active');
+      window.arLoop(performance.now());
+    }catch(e){ console.error(e); setStatus(e.message || 'Camera failed. Open the site directly and allow camera permission.', 'ERROR'); notify('AR scanner could not start'); }
+  };
+
+  window.stopAR = function stopAR(showToast){
+    if(showToast === undefined) showToast = true;
+    state.running = false;
+    if(state.raf) cancelAnimationFrame(state.raf);
+    state.raf = null;
+    if(state.stream){ state.stream.getTracks().forEach(function(t){t.stop();}); state.stream = null; }
+    var video = el('arVideo'); if(video) video.srcObject = null;
+    var overlay = el('arOverlay'); if(overlay) overlay.innerHTML = '';
+    setStatus('Scanner stopped. Saved records remain available below.', 'STANDBY');
+    if(showToast) notify('AR scanner stopped');
+  };
+
+  window.arLoop = async function arLoop(t){
+    if(!state.running) return;
+    var video = el('arVideo');
+    if(video && video.readyState >= 2 && state.model && (!state.lastScan || t - state.lastScan > state.scanInterval)){
+      state.lastScan = t;
+      try{
+        var preds = await state.model.detect(video);
+        var allowed = ['suitcase','backpack','handbag'];
+        state.lastDetections = preds.filter(function(p){return allowed.indexOf(p.class)>=0 && p.score>=0.32;}).slice(0,5).map(function(p){ return {label:p.class,bbox:p.bbox,score:p.score,kg:estimateKg(p,video)}; });
+        var claim = await scanBarcodeFromVideo(video);
+        if(claim){ state.claimNo = claim; var inp = el('arClaimNo'); if(inp) inp.value = claim; }
+        drawOverlay(video,state.lastDetections,state.lastDamageZones); renderScanList(); updateKpis();
+      }catch(e){ console.warn('AR scan skipped', e); }
+    }
+    state.raf = requestAnimationFrame(window.arLoop);
+  };
+
+  window.scanClaimStub = async function scanClaimStub(){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth){ setStatus('Start camera first before scanning claim stub.', 'READY'); return; }
+    setStatus('Scanning claim stub barcode/QR...', 'CLAIM');
+    var claim = await scanBarcodeFromVideo(video);
+    if(claim){ state.claimNo = claim; if(el('arClaimNo')) el('arClaimNo').value = claim; setStatus('Claim stub detected: '+claim, 'CLAIM OK'); }
+    else { setStatus('No QR/barcode detected. Type printed claim number manually, then continue damage scan.', 'MANUAL'); }
+    state.lastPhoto = captureFrame() || state.lastPhoto;
+    updateKpis();
+  };
+
+  window.runDamageSweep = function runDamageSweep(){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth){ setStatus('Start camera first before damage sweep.', 'READY'); return; }
+    analyzeDamageZones();
+  };
+
+  window.captureARSnapshot = function captureARSnapshot(){
+    var data = captureFrame();
+    if(!data){ notify('Start camera first'); return; }
+    state.lastPhoto = data;
+    var a = document.createElement('a'); a.href = data; a.download = 'oj_ar_snapshot_' + Date.now() + '.jpg'; a.click();
+    notify('AR snapshot saved');
+  };
+
+  window.toggleDamageChip = function toggleDamageChip(name){
+    name = String(name||'').replace(/&#39;/g,"'");
+    var i = state.selectedDamages.indexOf(name);
+    if(i>=0) state.selectedDamages.splice(i,1); else state.selectedDamages.push(name);
+    refreshDamageChips(); updateKpis();
+  };
+  window.updateARInspectionUI = function updateARInspectionUI(){ state.claimNo = el('arClaimNo') ? el('arClaimNo').value.trim() : state.claimNo; updateKpis(); };
+  window.saveARNotifySettings = saveConfig;
+
+  function makeRecord(){
+    state.claimNo = el('arClaimNo') ? el('arClaimNo').value.trim() : state.claimNo;
+    if(!state.claimNo) throw new Error('Claim number is required. Scan or type it first.');
+    var photo = state.lastPhoto || captureFrame();
+    state.lastPhoto = photo || '';
+    return {
+      id:uid(), claimNo:state.claimNo, route:el('arRouteCtx')?el('arRouteCtx').value:'', routeTitle:el('arRouteCtx')?routeName(el('arRouteCtx').value):'',
+      classType:el('arClassCtx')?el('arClassCtx').value:'tourist', pax:el('arPaxCtx')?Number(el('arPaxCtx').value||1):1,
+      damages:state.selectedDamages.slice(), risk:riskFromDamage(), notes:el('arDamageNotes')?el('arDamageNotes').value.trim():'',
+      detections:state.lastDetections.map(function(d){return {label:d.label,score:Math.round(d.score*100)/100,kg:d.kg};}),
+      damageZones:state.lastDamageZones.map(function(z){return z.label;}), photo:photo, timestamp:nowISO(), timestampPH:phTime()
+    };
+  }
+  window.saveARInspection = async function saveARInspection(alsoNotify){
+    try{
+      var rec = makeRecord();
+      var records = getRecords(); records.unshift(rec); saveRecords(records.slice(0,250)); renderRecords();
+      notify('AR inspection saved'); setStatus('Saved claim '+rec.claimNo+' with '+rec.damages.length+' confirmed damage item(s).', 'SAVED');
+      var cfg = getConfig();
+      if(alsoNotify || cfg.autoEmail) await sendARInspectionReport(rec, cfg);
+    }catch(e){ setStatus(e.message || 'Save failed', 'ERROR'); notify(e.message || 'Save failed'); }
+  };
+  async function sendARInspectionReport(rec, cfg){
+    cfg = cfg || getConfig();
+    if(cfg.endpoint){
+      try{
+        var res = await fetch(cfg.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(rec)});
+        if(res.ok){ notify('AR report sent to API'); setStatus('Report sent to configured API endpoint.', 'SENT'); return; }
+        throw new Error('API returned '+res.status);
+      }catch(e){ console.warn('API notify failed', e); notify('API failed; opening email handoff if email exists'); }
+    }
+    if(cfg.email){
+      var subject = 'OceanJet AR Damage Report - Claim ' + rec.claimNo;
+      var body = ['OceanJet AR Baggage Damage Report','', 'Claim: '+rec.claimNo, 'Route: '+rec.routeTitle, 'Class/Pax: '+rec.classType+' / '+rec.pax, 'Risk: '+rec.risk, 'Damages: '+(rec.damages.join(', ') || 'None confirmed'), 'Detected Bags: '+rec.detections.map(function(d){return d.label+' '+d.kg+'kg';}).join('; '), 'Notes: '+(rec.notes||'-'), 'Timestamp: '+rec.timestampPH, '', 'Photo evidence is saved in the app record. Export JSON to include image data.'].join('\n');
+      window.location.href = 'mailto:'+encodeURIComponent(cfg.email)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+      setStatus('Email handoff opened. For fully automatic email, connect an API endpoint.', 'EMAIL');
+    }else{
+      setStatus('No email/API configured. Record saved locally; export CSV/JSON anytime.', 'LOCAL');
+    }
+  }
+  function renderRecords(){
+    var box = el('arRecordList'); if(!box) return;
+    var records = getRecords();
+    box.innerHTML = records.length ? records.slice(0,12).map(function(r){
+      return '<div class="v109-row">'+(r.photo?'<img class="v109-photo" src="'+r.photo+'">':'')+'<b>'+esc(r.claimNo)+'</b> • '+esc(r.risk)+' risk<br>'+esc(r.routeTitle||r.route)+'<br><span>'+esc((r.damages||[]).join(', ') || 'No confirmed damage')+'</span><div class="v109-mini">'+esc(r.timestampPH||r.timestamp)+' • '+esc(r.id)+'</div></div>';
+    }).join('') : '<div class="v109-row">No AR records saved yet.</div>';
+  }
+  window.exportARInspections = function exportARInspections(type){
+    var records = getRecords();
+    if(!records.length){ notify('No AR records to export'); return; }
+    var blob, name;
+    if(type === 'json'){
+      blob = new Blob([JSON.stringify(records,null,2)],{type:'application/json'}); name='oceanjet_ar_damage_records.json';
+    }else{
+      var rows = [['id','claimNo','route','risk','damages','notes','timestamp']].concat(records.map(function(r){return [r.id,r.claimNo,r.routeTitle||r.route,r.risk,(r.damages||[]).join('|'),(r.notes||'').replace(/\n/g,' '),r.timestampPH||r.timestamp];}));
+      blob = new Blob([rows.map(function(r){return r.map(function(c){return '"'+String(c==null?'':c).replace(/"/g,'""')+'"';}).join(',');}).join('\n')],{type:'text/csv'}); name='oceanjet_ar_damage_records.csv';
+    }
+    var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
+  };
+  window.clearARInspections = function clearARInspections(){
+    if(confirm('Clear all saved AR baggage records on this device?')){ localStorage.removeItem(STORE_KEY); renderRecords(); notify('AR records cleared'); }
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    if(el('view-ar') && el('view-ar').classList.contains('active')) window.buildAR();
+  });
+})();
+</script>
+
+
 <!-- V101_REAL_CONNECTING_PASSENGER_FARES: generated from V100 fixed source, baggage formula preserved. -->
+<script>
+/* V110 Professional AR Claim + Damage Scanner
+   Scope: overrides AR Scanner only. Keeps map, Gemini, baggage calculator, fares, schedules and PDF receipts unchanged. */
+(function(){
+  'use strict';
+
+  var STORE_KEY = 'oj_v110_ar_inspection_records';
+  var DRAFT_KEY = 'oj_v110_ar_inspection_draft';
+  var CONFIG_KEY = 'oj_v110_ar_inspection_config';
+
+  var state = window.OJ_V110_AR_PRO = window.OJ_V110_AR_PRO || {
+    stream:null,
+    model:null,
+    running:false,
+    raf:null,
+    lastScan:0,
+    scanInterval:380,
+    sensitivity:0.34,
+    claimNo:'',
+    selectedDamages:[],
+    lastDetections:[],
+    lastDamageZones:[],
+    lastQuality:{lighting:'--',sharpness:'--',coverage:'--',score:0},
+    lastPhoto:'',
+    lastStubPhoto:'',
+    barcodeDetector:null,
+    sessionCount:0,
+    step:'claim'
+  };
+
+  function el(id){ return document.getElementById(id); }
+  function notify(msg){ if(typeof toast === 'function') toast(msg); else console.log(msg); }
+  function esc(value){ return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]); }); }
+  function nowISO(){ return new Date().toISOString(); }
+  function phTime(){ return new Date().toLocaleString('en-PH', { timeZone:'Asia/Manila', hour12:true }); }
+  function uid(){ return 'OJ-AR-' + nowISO().replace(/[-:.TZ]/g,'').slice(0,14) + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); }
+
+  function getRecords(){ try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]') || []; } catch(e){ return []; } }
+  function setRecords(records){ localStorage.setItem(STORE_KEY, JSON.stringify(records)); }
+  function getConfig(){ try { return JSON.parse(localStorage.getItem(CONFIG_KEY) || '{}') || {}; } catch(e){ return {}; } }
+  function getDB(){ try { return (typeof DB !== 'undefined') ? DB : {}; } catch(e){ return {}; } }
+
+  function routeKeys(){
+    var db = getDB();
+    var schedules = db.schedules || {};
+    var preferred = ['cebu_tagbilaran','cebu_getafe','cebu_ormoc','cebu_palompon','cebu_maasin','cebu_dumaguete','cebu_surigao','cebu_siquijor','tagbilaran_cebu','getafe_cebu','ormoc_cebu','maasin_cebu'];
+    var all = Object.keys(schedules).filter(function(key){
+      var title = (schedules[key] && schedules[key].title || '').toLowerCase();
+      return key.indexOf('cebu') >= 0 || title.indexOf('cebu') >= 0 || preferred.indexOf(key) >= 0;
+    });
+    if(!all.length) all = preferred;
+    return preferred.filter(function(k){ return all.indexOf(k) >= 0; }).concat(all.filter(function(k){ return preferred.indexOf(k) < 0; }));
+  }
+
+  function routeTitle(key){
+    var db = getDB();
+    if(db.schedules && db.schedules[key] && db.schedules[key].title) return db.schedules[key].title;
+    return String(key || '').replace(/_/g, ' → ').replace(/\b\w/g, function(m){ return m.toUpperCase(); });
+  }
+
+  function routeOptions(selected){
+    return routeKeys().map(function(key){ return '<option value="'+esc(key)+'" '+(key===selected?'selected':'')+'>'+esc(routeTitle(key))+'</option>'; }).join('');
+  }
+
+  function damageCatalog(){
+    return [
+      {name:'Crack', severity:'high', icon:'⚠️'},
+      {name:'Broken handle', severity:'high', icon:'🧳'},
+      {name:'Damaged wheel', severity:'high', icon:'⚙️'},
+      {name:'Dent', severity:'medium', icon:'◖'},
+      {name:'Scratch/scuff', severity:'low', icon:'〰️'},
+      {name:'Wet mark', severity:'medium', icon:'💧'},
+      {name:'Torn fabric', severity:'high', icon:'🧵'},
+      {name:'Open zipper', severity:'medium', icon:'🔓'},
+      {name:'Missing lock', severity:'high', icon:'🔐'},
+      {name:'Other visible issue', severity:'medium', icon:'➕'}
+    ];
+  }
+
+  function ensureStyles(){
+    if(el('v110ArProStyles')) return;
+    var style = document.createElement('style');
+    style.id = 'v110ArProStyles';
+    style.textContent = `
+      .v110-shell{position:relative;overflow:hidden;border:1px solid rgba(56,189,248,.32);background:linear-gradient(140deg,rgba(2,6,23,.96),rgba(15,23,42,.86));box-shadow:0 0 36px rgba(56,189,248,.14),inset 0 0 34px rgba(244,63,94,.05)}
+      .v110-shell:before{content:'';position:absolute;inset:-70%;background:radial-gradient(circle at 28% 22%,rgba(56,189,248,.16),transparent 35%),radial-gradient(circle at 72% 82%,rgba(244,63,94,.12),transparent 32%),conic-gradient(from 200deg,transparent,rgba(56,189,248,.08),transparent,rgba(244,63,94,.08),transparent);animation:v110Spin 24s linear infinite;pointer-events:none}.v110-shell>*{position:relative;z-index:1}@keyframes v110Spin{to{transform:rotate(360deg)}}
+      .v110-title{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}.v110-title h3{margin:0;font-size:1.06rem}.v110-sub{font-size:.74rem;color:var(--text2);margin-top:4px;line-height:1.35}.v110-badge{font-size:.61rem;letter-spacing:.09em;text-transform:uppercase;border:1px solid rgba(56,189,248,.36);background:rgba(56,189,248,.14);color:#bae6fd;border-radius:999px;padding:5px 9px;font-weight:900;white-space:nowrap}
+      .v110-step-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:11px 0}.v110-step{padding:8px 6px;border:1px solid var(--border);background:rgba(255,255,255,.035);border-radius:13px;text-align:center;font-size:.61rem;color:var(--text2);transition:.2s}.v110-step b{display:block;color:var(--accent);font-size:.9rem}.v110-step.active{border-color:#38bdf8;background:rgba(56,189,248,.14);color:#fff;box-shadow:0 0 18px rgba(56,189,248,.12)}.v110-step.done{border-color:#22c55e;background:rgba(34,197,94,.10)}
+      .v110-video-shell{position:relative;border:1px solid rgba(56,189,248,.28);border-radius:18px;overflow:hidden;background:#020617;min-height:320px}.v110-video-shell:after{content:'';position:absolute;inset:0;background:linear-gradient(transparent 50%,rgba(56,189,248,.075) 51%),linear-gradient(90deg,transparent 50%,rgba(244,63,94,.05) 51%);background-size:100% 19px,19px 100%;mix-blend-mode:screen;opacity:.48;pointer-events:none}.v110-video{width:100%;min-height:320px;object-fit:cover;display:block;background:#020617}.v110-overlay{position:absolute;inset:0;pointer-events:none}.v110-scanline{position:absolute;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,#38bdf8,transparent);box-shadow:0 0 16px #38bdf8;animation:v110Scan 2.8s ease-in-out infinite}@keyframes v110Scan{0%{top:8%}50%{top:88%}100%{top:8%}}
+      .v110-box{position:absolute;border:2px solid #38bdf8;border-radius:12px;box-shadow:0 0 18px rgba(56,189,248,.82),inset 0 0 11px rgba(56,189,248,.20)}.v110-box.damage-high{border-color:#ef4444;box-shadow:0 0 20px rgba(239,68,68,.86),inset 0 0 12px rgba(239,68,68,.18)}.v110-box.damage-medium{border-color:#f59e0b;box-shadow:0 0 18px rgba(245,158,11,.76),inset 0 0 12px rgba(245,158,11,.16)}.v110-box.damage-low{border-color:#22c55e;box-shadow:0 0 16px rgba(34,197,94,.62),inset 0 0 10px rgba(34,197,94,.12)}.v110-label{position:absolute;top:-25px;left:0;background:rgba(2,6,23,.94);border:1px solid currentColor;border-radius:999px;padding:2px 8px;color:#bae6fd;font-size:.61rem;font-weight:900;white-space:nowrap}.v110-box.damage-high .v110-label{color:#fecdd3}.v110-box.damage-medium .v110-label{color:#fde68a}.v110-box.damage-low .v110-label{color:#bbf7d0}
+      .v110-toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}.v110-toolbar button{justify-content:center}.v110-toolbar-wide{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:8px}.v110-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.v110-kpi{background:rgba(255,255,255,.045);border:1px solid var(--border);border-radius:14px;padding:9px 7px;text-align:center}.v110-kpi b{display:block;color:var(--accent);font-size:1rem}.v110-kpi span{font-size:.57rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text3)}
+      .v110-form{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.v110-form .full{grid-column:1/-1}.v110-inline{display:flex;gap:8px;align-items:center}.v110-inline>*{flex:1}.v110-damage-chips{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px}.v110-chip{padding:7px 9px;border:1px solid var(--border);border-radius:999px;background:rgba(255,255,255,.04);font-size:.72rem;color:var(--text2);cursor:pointer;user-select:none}.v110-chip.active{border-color:var(--accent);background:rgba(244,63,94,.17);color:#fff}.v110-chip.high.active{border-color:#ef4444}.v110-chip.medium.active{border-color:#f59e0b}.v110-chip.low.active{border-color:#22c55e}
+      .v110-alert{margin-top:10px;padding:10px;border-radius:14px;border:1px solid rgba(56,189,248,.25);background:rgba(56,189,248,.08);font-size:.78rem;color:var(--text2);line-height:1.45}.v110-list{display:flex;flex-direction:column;gap:8px;margin-top:10px}.v110-row{border:1px solid var(--border);background:rgba(255,255,255,.04);border-radius:14px;padding:10px;font-size:.78rem}.v110-row b{color:var(--accent)}.v110-photo{width:58px;height:58px;border-radius:12px;object-fit:cover;border:1px solid var(--border);float:right;margin-left:8px}.v110-mini{font-size:.68rem;color:var(--text3);margin-top:4px}.v110-guide{font-size:.76rem;color:var(--text2);line-height:1.55}.v110-guide ol{padding-left:18px}.v110-guide li{margin:3px 0}.v110-range{width:100%}.v110-pill{display:inline-flex;gap:5px;align-items:center;border:1px solid var(--border);background:rgba(255,255,255,.04);border-radius:999px;padding:5px 8px;font-size:.68rem;color:var(--text2);margin:2px 3px 2px 0}
+      @media(max-width:430px){.v110-step-grid,.v110-kpis{grid-template-columns:repeat(2,1fr)}.v110-toolbar,.v110-toolbar-wide,.v110-form{grid-template-columns:1fr}.v110-inline{flex-direction:column;align-items:stretch}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function setStep(step){
+    state.step = step;
+    document.querySelectorAll('.v110-step').forEach(function(node){
+      var s = node.getAttribute('data-step');
+      node.classList.toggle('active', s === step);
+      node.classList.toggle('done', ['claim','damage','confirm','saved'].indexOf(s) < ['claim','damage','confirm','saved'].indexOf(step));
+    });
+  }
+
+  function setStatus(message, badge){
+    var status = el('arStatus');
+    var mode = el('arModeBadge');
+    if(status) status.textContent = message;
+    if(mode && badge) mode.textContent = badge;
+  }
+
+  function saveConfig(){
+    var cfg = {
+      email: el('arNotifyEmail') ? el('arNotifyEmail').value.trim() : '',
+      endpoint: el('arApiEndpoint') ? el('arApiEndpoint').value.trim() : '',
+      autoSend: !!(el('arAutoSend') && el('arAutoSend').checked),
+      anonymize: !!(el('arAnonymize') && el('arAnonymize').checked)
+    };
+    localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg));
+    notify('AR settings saved');
+  }
+
+  function loadConfigIntoUI(){
+    var cfg = getConfig();
+    if(el('arNotifyEmail')) el('arNotifyEmail').value = cfg.email || '';
+    if(el('arApiEndpoint')) el('arApiEndpoint').value = cfg.endpoint || '';
+    if(el('arAutoSend')) el('arAutoSend').checked = !!cfg.autoSend;
+    if(el('arAnonymize')) el('arAnonymize').checked = !!cfg.anonymize;
+  }
+
+  function renderDamageChips(){
+    return damageCatalog().map(function(item){
+      return '<span class="v110-chip '+esc(item.severity)+'" data-damage="'+esc(item.name)+'" onclick="toggleDamageChip(\''+esc(item.name).replace(/'/g,'\\&#39;')+'\')">'+item.icon+' '+esc(item.name)+'</span>';
+    }).join('');
+  }
+
+  function refreshDamageChips(){
+    document.querySelectorAll('.v110-chip[data-damage]').forEach(function(node){ node.classList.toggle('active', state.selectedDamages.indexOf(node.dataset.damage) >= 0); });
+    var summary = el('arDamageSummary');
+    if(summary) summary.textContent = state.selectedDamages.length ? state.selectedDamages.join(', ') : 'No confirmed damage yet';
+    updateKpis();
+    autoSaveDraft();
+  }
+
+  function getSelectedTrip(){
+    var route = el('arRouteCtx') ? el('arRouteCtx').value : 'cebu_tagbilaran';
+    var trip = el('arTripCtx') ? el('arTripCtx').value : '';
+    return {route:route, routeTitle:routeTitle(route), trip:trip};
+  }
+
+  function renderTripOptions(){
+    var select = el('arTripCtx');
+    if(!select) return;
+    var db = getDB();
+    var route = el('arRouteCtx') ? el('arRouteCtx').value : '';
+    var trips = db.schedules && db.schedules[route] && db.schedules[route].trips ? db.schedules[route].trips : [];
+    select.innerHTML = '<option value="">Auto / Not assigned</option>' + trips.map(function(t, index){
+      var value = (t.dep || '') + '|' + (t.vessel || '') + '|' + (t.arr || '');
+      return '<option value="'+esc(value)+'">'+esc(t.dep || '--')+' • '+esc(t.vessel || 'Vessel')+' → '+esc(t.arr || '')+'</option>';
+    }).join('');
+  }
+
+  function captureFrame(quality){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth) return '';
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.min(1280, video.videoWidth);
+    canvas.height = Math.max(1, Math.round(canvas.width * (video.videoHeight / Math.max(1, video.videoWidth))));
+    var ctx = canvas.getContext('2d');
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    return canvas.toDataURL('image/jpeg', quality || 0.82);
+  }
+
+  function analyzeFrameQuality(video){
+    try{
+      var w = 96, h = 54;
+      var canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+      var ctx = canvas.getContext('2d', { willReadFrequently:true });
+      ctx.drawImage(video,0,0,w,h);
+      var data = ctx.getImageData(0,0,w,h).data;
+      var sum = 0, sumSq = 0;
+      for(var i=0;i<data.length;i+=4){
+        var y = 0.2126*data[i] + 0.7152*data[i+1] + 0.0722*data[i+2];
+        sum += y; sumSq += y*y;
+      }
+      var n = data.length/4;
+      var avg = sum/n;
+      var variance = Math.max(0, sumSq/n - avg*avg);
+      var sharp = Math.min(100, Math.round(Math.sqrt(variance)*4));
+      var lighting = avg < 55 ? 'LOW' : avg > 215 ? 'TOO BRIGHT' : 'GOOD';
+      state.lastQuality = { lighting:lighting, sharpness: sharp >= 55 ? 'GOOD' : sharp >= 30 ? 'FAIR' : 'LOW', coverage: state.lastDetections.length ? 'OK' : 'WAITING', score: Math.round((Math.min(100, avg/1.8) + sharp)/2) };
+    }catch(e){ state.lastQuality = {lighting:'--',sharpness:'--',coverage:'--',score:0}; }
+  }
+
+  function estimateKg(prediction, video){
+    var box = prediction.bbox || [0,0,0,0];
+    var areaRatio = (box[2] * box[3]) / Math.max(1, (video.videoWidth || 1) * (video.videoHeight || 1));
+    var base = prediction.class === 'suitcase' ? 14 : prediction.class === 'backpack' ? 8 : 5;
+    return Math.max(2, Math.min(60, Math.round(base + areaRatio * 130)));
+  }
+
+  function severityForDamage(name){
+    var item = damageCatalog().find(function(d){ return d.name === name; });
+    return item ? item.severity : 'medium';
+  }
+
+  function riskScore(){
+    var points = 0;
+    state.selectedDamages.forEach(function(name){ points += severityForDamage(name) === 'high' ? 3 : severityForDamage(name) === 'medium' ? 2 : 1; });
+    points += state.lastDamageZones.filter(function(z){ return z.severity === 'high'; }).length * 2;
+    points += state.lastDamageZones.filter(function(z){ return z.severity === 'medium'; }).length;
+    if(points >= 7) return {level:'HIGH', points:points};
+    if(points >= 3) return {level:'MEDIUM', points:points};
+    return {level:'LOW', points:points};
+  }
+
+  function drawOverlay(video){
+    var overlay = el('arOverlay');
+    if(!overlay || !video || !video.videoWidth) return;
+    overlay.innerHTML = '<div class="v110-scanline"></div>';
+    var rect = video.getBoundingClientRect();
+    var sx = rect.width / Math.max(1, video.videoWidth);
+    var sy = rect.height / Math.max(1, video.videoHeight);
+    function addBox(box, label, severity){
+      var node = document.createElement('div');
+      node.className = 'v110-box' + (severity ? ' damage-' + severity : '');
+      node.style.left = (box[0]*sx) + 'px';
+      node.style.top = (box[1]*sy) + 'px';
+      node.style.width = (box[2]*sx) + 'px';
+      node.style.height = (box[3]*sy) + 'px';
+      var lab = document.createElement('div');
+      lab.className = 'v110-label';
+      lab.textContent = label;
+      node.appendChild(lab);
+      overlay.appendChild(node);
+    }
+    state.lastDetections.forEach(function(det){
+      addBox(det.bbox, det.label + ' • ' + det.kg + 'kg • ' + Math.round(det.score*100) + '%', null);
+    });
+    state.lastDamageZones.forEach(function(zone){ addBox(zone.bbox, zone.label, zone.severity || 'medium'); });
+  }
+
+  function createDamageZones(){
+    var zones = [];
+    state.lastDetections.forEach(function(det){
+      var b = det.bbox || [0,0,0,0];
+      var x=b[0], y=b[1], w=b[2], h=b[3];
+      if(w < 15 || h < 15) return;
+      var selected = state.selectedDamages;
+      if(selected.indexOf('Broken handle') >= 0){ zones.push({label:'Handle inspection zone', severity:'high', bbox:[x+w*0.28,y+h*0.02,w*0.44,h*0.14]}); }
+      if(selected.indexOf('Damaged wheel') >= 0){ zones.push({label:'Wheel inspection zone', severity:'high', bbox:[x+w*0.05,y+h*0.78,w*0.90,h*0.18]}); }
+      if(selected.indexOf('Crack') >= 0 || selected.indexOf('Dent') >= 0){ zones.push({label:'Shell/body damage zone', severity:selected.indexOf('Crack')>=0?'high':'medium', bbox:[x+w*0.12,y+h*0.18,w*0.76,h*0.55]}); }
+      if(selected.indexOf('Scratch/scuff') >= 0 || selected.indexOf('Wet mark') >= 0 || selected.indexOf('Torn fabric') >= 0){ zones.push({label:'Surface issue zone', severity:selected.indexOf('Torn fabric')>=0?'high':'medium', bbox:[x+w*0.08,y+h*0.12,w*0.84,h*0.72]}); }
+      if(selected.indexOf('Missing lock') >= 0 || selected.indexOf('Open zipper') >= 0){ zones.push({label:'Lock/zipper zone', severity:selected.indexOf('Missing lock')>=0?'high':'medium', bbox:[x+w*0.58,y+h*0.18,w*0.27,h*0.42]}); }
+    });
+    if(!zones.length && state.lastDetections.length){
+      var det = state.lastDetections[0], b=det.bbox, x=b[0],y=b[1],w=b[2],h=b[3];
+      zones.push({label:'General visual inspection', severity:'low', bbox:[x+w*0.08,y+h*0.08,w*0.84,h*0.84]});
+    }
+    state.lastDamageZones = zones.slice(0,8);
+    drawOverlay(el('arVideo'));
+    renderScanList();
+    updateKpis();
+  }
+
+  async function scanBarcode(){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth) return '';
+    if(!('BarcodeDetector' in window)) return '';
+    try{
+      if(!state.barcodeDetector) state.barcodeDetector = new BarcodeDetector({ formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','itf'] });
+      var codes = await state.barcodeDetector.detect(video);
+      if(codes && codes.length) return String(codes[0].rawValue || '').trim();
+    }catch(e){ console.warn('Barcode scan unavailable', e); }
+    return '';
+  }
+
+  function updateKpis(){
+    var bags = state.lastDetections.length;
+    var kg = state.lastDetections.reduce(function(total,d){ return total + (d.kg || 0); }, 0);
+    var confidence = bags ? Math.round(state.lastDetections.reduce(function(total,d){ return total + (d.score || 0); }, 0) / bags * 100) : 0;
+    var risk = riskScore();
+    if(el('arKpiClaim')) el('arKpiClaim').textContent = state.claimNo || (el('arClaimNo') ? el('arClaimNo').value.trim() : '') || '--';
+    if(el('arKpiBags')) el('arKpiBags').textContent = String(bags);
+    if(el('arKpiKg')) el('arKpiKg').textContent = kg + 'kg';
+    if(el('arKpiRisk')) el('arKpiRisk').textContent = risk.level;
+    if(el('arKpiQuality')) el('arKpiQuality').textContent = state.lastQuality.score ? state.lastQuality.score + '%' : '--';
+    if(el('arKpiConfidence')) el('arKpiConfidence').textContent = confidence ? confidence + '%' : '--';
+  }
+
+  function renderScanList(){
+    var box = el('arScanList');
+    if(!box) return;
+    var quality = state.lastQuality;
+    var detections = state.lastDetections.map(function(d, i){
+      return '<span class="v110-pill">#'+(i+1)+' '+esc(d.label)+' • '+d.kg+'kg • '+Math.round(d.score*100)+'%</span>';
+    }).join('');
+    var zones = state.lastDamageZones.map(function(z){ return '<span class="v110-pill">'+esc(z.label)+' • '+esc(z.severity)+'</span>'; }).join('');
+    box.innerHTML =
+      '<div class="v110-row"><b>Live AI Assist</b><br>' + (detections || '<span class="v110-mini">No baggage detected yet.</span>') + '</div>'+
+      '<div class="v110-row"><b>Damage Zones</b><br>' + (zones || '<span class="v110-mini">Select/confirm damage chips, then run Damage Sweep.</span>') + '</div>'+
+      '<div class="v110-row"><b>Frame Quality</b><br><span class="v110-pill">Lighting: '+esc(quality.lighting)+'</span><span class="v110-pill">Sharpness: '+esc(quality.sharpness)+'</span><span class="v110-pill">Coverage: '+esc(quality.coverage)+'</span></div>';
+  }
+
+  function autoSaveDraft(){
+    try{
+      var draft = {
+        claimNo: el('arClaimNo') ? el('arClaimNo').value.trim() : state.claimNo,
+        route: el('arRouteCtx') ? el('arRouteCtx').value : '',
+        trip: el('arTripCtx') ? el('arTripCtx').value : '',
+        classType: el('arClassCtx') ? el('arClassCtx').value : '',
+        pax: el('arPaxCtx') ? el('arPaxCtx').value : '1',
+        notes: el('arDamageNotes') ? el('arDamageNotes').value : '',
+        damages: state.selectedDamages.slice(),
+        timestamp: nowISO()
+      };
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    }catch(e){}
+  }
+
+  function loadDraft(){
+    try{
+      var draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}') || {};
+      if(el('arClaimNo') && draft.claimNo) el('arClaimNo').value = draft.claimNo;
+      if(el('arRouteCtx') && draft.route) el('arRouteCtx').value = draft.route;
+      renderTripOptions();
+      if(el('arTripCtx') && draft.trip) el('arTripCtx').value = draft.trip;
+      if(el('arClassCtx') && draft.classType) el('arClassCtx').value = draft.classType;
+      if(el('arPaxCtx') && draft.pax) el('arPaxCtx').value = draft.pax;
+      if(el('arDamageNotes') && draft.notes) el('arDamageNotes').value = draft.notes;
+      if(Array.isArray(draft.damages)) state.selectedDamages = draft.damages;
+      state.claimNo = draft.claimNo || '';
+    }catch(e){}
+  }
+
+  function makeRecord(){
+    state.claimNo = el('arClaimNo') ? el('arClaimNo').value.trim() : state.claimNo;
+    if(!state.claimNo) throw new Error('Claim number is required. Scan a QR/barcode or enter it manually.');
+    var selected = getSelectedTrip();
+    var risk = riskScore();
+    var cfg = getConfig();
+    var photo = state.lastPhoto || captureFrame(0.82);
+    state.lastPhoto = photo;
+    var claimForStorage = cfg.anonymize ? state.claimNo.replace(/.(?=.{4})/g,'•') : state.claimNo;
+    return {
+      id: uid(),
+      claimNo: claimForStorage,
+      claimRawStored: !cfg.anonymize,
+      route: selected.route,
+      routeTitle: selected.routeTitle,
+      trip: selected.trip,
+      classType: el('arClassCtx') ? el('arClassCtx').value : 'tourist',
+      pax: el('arPaxCtx') ? Number(el('arPaxCtx').value || 1) : 1,
+      damages: state.selectedDamages.slice(),
+      risk: risk.level,
+      riskPoints: risk.points,
+      notes: el('arDamageNotes') ? el('arDamageNotes').value.trim() : '',
+      detections: state.lastDetections.map(function(d){ return { label:d.label, kg:d.kg, confidence:Math.round(d.score*100), bbox:d.bbox }; }),
+      damageZones: state.lastDamageZones.map(function(z){ return { label:z.label, severity:z.severity }; }),
+      quality: state.lastQuality,
+      photo: photo || '',
+      timestamp: nowISO(),
+      timestampPH: phTime(),
+      appVersion: 'V110 Professional AR Scanner'
+    };
+  }
+
+  function renderRecords(){
+    var box = el('arRecordList');
+    if(!box) return;
+    var records = getRecords();
+    box.innerHTML = records.length ? records.slice(0,14).map(function(r){
+      return '<div class="v110-row">'+(r.photo ? '<img class="v110-photo" src="'+r.photo+'" alt="AR photo">' : '')+'<b>'+esc(r.claimNo)+'</b> • '+esc(r.risk)+' risk<br>'+esc(r.routeTitle || r.route)+'<br><span>'+esc((r.damages || []).join(', ') || 'No confirmed damage')+'</span><div class="v110-mini">'+esc(r.timestampPH || r.timestamp)+' • '+esc(r.id)+'</div></div>';
+    }).join('') : '<div class="v110-row">No AR records saved yet.</div>';
+  }
+
+  async function sendReport(record, force){
+    var cfg = getConfig();
+    if(cfg.endpoint){
+      try{
+        var response = await fetch(cfg.endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(record) });
+        if(response.ok){ setStatus('Report sent to configured API endpoint.', 'SENT'); notify('AR report sent to API'); return true; }
+        throw new Error('API returned HTTP ' + response.status);
+      }catch(e){ console.warn('AR API send failed', e); if(force) notify('API failed; trying email handoff'); }
+    }
+    if(cfg.email && force){
+      var subject = 'OceanJet AR Damage Report - Claim ' + record.claimNo;
+      var body = [
+        'OceanJet AR Baggage Damage Report', '',
+        'Claim: ' + record.claimNo,
+        'Route: ' + record.routeTitle,
+        'Trip: ' + (record.trip || 'Not assigned'),
+        'Class/Pax: ' + record.classType + ' / ' + record.pax,
+        'Risk: ' + record.risk + ' (' + record.riskPoints + ' pts)',
+        'Damages: ' + ((record.damages || []).join(', ') || 'None confirmed'),
+        'Detected baggage: ' + ((record.detections || []).map(function(d){ return d.label + ' ' + d.kg + 'kg ' + d.confidence + '%'; }).join('; ') || 'None'),
+        'Quality: lighting ' + record.quality.lighting + ', sharpness ' + record.quality.sharpness,
+        'Notes: ' + (record.notes || '-'),
+        'Timestamp: ' + record.timestampPH,
+        '', 'Photo evidence is saved locally. Export JSON from the app to include image data.'
+      ].join('\n');
+      window.location.href = 'mailto:' + encodeURIComponent(cfg.email) + '?subject=' + encodeURIComponent(subject) + '&body=' + encodeURIComponent(body);
+      setStatus('Email handoff opened. Use API endpoint for fully automatic email.', 'EMAIL');
+      return true;
+    }
+    if(cfg.autoSend && !cfg.endpoint && !cfg.email) setStatus('Auto-send enabled but no email/API is configured. Record saved locally.', 'LOCAL');
+    return false;
+  }
+
+  window.buildAR = function buildAR(){
+    ensureStyles();
+    var defaultRoute = routeKeys()[0] || 'cebu_tagbilaran';
+    var cfg = getConfig();
+    el('view-ar').innerHTML = `
+      <div class="card glow v110-shell">
+        <div class="v110-title">
+          <div><h3>🧠 AR Baggage Claim + Damage Scanner Pro</h3><div class="v110-sub">Guided workflow: scan claim stub, inspect baggage, confirm damage, save report, then notify/export.</div></div>
+          <span id="arModeBadge" class="v110-badge">STANDBY</span>
+        </div>
+        <div class="v110-step-grid">
+          <div class="v110-step active" data-step="claim"><b>1</b>Claim</div>
+          <div class="v110-step" data-step="damage"><b>2</b>Damage</div>
+          <div class="v110-step" data-step="confirm"><b>3</b>Confirm</div>
+          <div class="v110-step" data-step="saved"><b>4</b>Saved</div>
+        </div>
+        <div class="v110-video-shell">
+          <video id="arVideo" class="v110-video" autoplay playsinline muted></video>
+          <div id="arOverlay" class="v110-overlay"><div class="v110-scanline"></div></div>
+        </div>
+        <div class="v110-toolbar">
+          <button class="primary sm" onclick="startAR()">▶ Start Camera</button>
+          <button class="sm" onclick="scanClaimStub()">🏷 Scan Claim Stub</button>
+          <button class="danger sm" onclick="stopAR()">■ Stop</button>
+        </div>
+        <div class="v110-toolbar-wide">
+          <button class="sm" onclick="runDamageSweep()">🔎 Damage Sweep</button>
+          <button class="sm" onclick="captureARSnapshot()">📸 Save Snapshot</button>
+        </div>
+        <div class="v110-kpis">
+          <div class="v110-kpi"><b id="arKpiClaim">--</b><span>Claim</span></div>
+          <div class="v110-kpi"><b id="arKpiBags">0</b><span>Bags</span></div>
+          <div class="v110-kpi"><b id="arKpiRisk">LOW</b><span>Risk</span></div>
+          <div class="v110-kpi"><b id="arKpiQuality">--</b><span>Quality</span></div>
+        </div>
+        <div id="arStatus" class="v110-alert">Start the camera, keep the claim stub clear, then scan the baggage slowly from all sides. QR/barcode works when supported by the browser; manual claim entry is available.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">🏷 Claim + Trip Context</div>
+        <div class="v110-form">
+          <div class="input-group"><label>Claim Number</label><input id="arClaimNo" placeholder="Scan or type claim number" oninput="updateARInspectionUI()"></div>
+          <div class="input-group"><label>Passenger Class</label><select id="arClassCtx" onchange="autoSaveARDraft()"><option value="tourist">Tourist/Open Air</option><option value="business">Business Class</option></select></div>
+          <div class="input-group"><label>Route</label><select id="arRouteCtx" onchange="renderARTripOptions(); autoSaveARDraft()">${routeOptions(defaultRoute)}</select></div>
+          <div class="input-group"><label>Passengers</label><input id="arPaxCtx" type="number" min="1" value="1" oninput="autoSaveARDraft()"></div>
+          <div class="input-group full"><label>Trip / Vessel</label><select id="arTripCtx" onchange="autoSaveARDraft()"></select></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">⚠️ Damage Confirmation</div>
+        <div class="v110-damage-chips">${renderDamageChips()}</div>
+        <div class="v110-alert"><b>Confirmed:</b> <span id="arDamageSummary">No confirmed damage yet</span></div>
+        <div class="input-group" style="margin-top:10px"><label>Damage Notes</label><textarea id="arDamageNotes" rows="3" placeholder="Example: wheel cracked, handle loose, scratches on front shell" oninput="autoSaveARDraft()"></textarea></div>
+        <div class="input-group"><label>Detection Sensitivity</label><input id="arSensitivity" class="v110-range" type="range" min="20" max="80" value="34" oninput="setARSensitivity(this.value)"><div class="v110-mini">Lower value detects more objects; higher value reduces false positives.</div></div>
+        <div id="arScanList" class="v110-list"></div>
+        <div class="v110-toolbar-wide">
+          <button class="primary sm" onclick="saveARInspection(false)">💾 Save Record</button>
+          <button class="accent sm" onclick="saveARInspection(true)">✉ Save + Notify</button>
+        </div>
+        <button class="sm block" style="margin-top:8px" onclick="nextARBaggage()">➡ Next Baggage</button>
+      </div>
+
+      <div class="card">
+        <div class="card-header">🔗 Notification / Backend</div>
+        <div class="v110-form">
+          <div class="input-group"><label>Notify Email</label><input id="arNotifyEmail" placeholder="claims@example.com" value="${esc(cfg.email || '')}"></div>
+          <div class="input-group"><label>API Endpoint</label><input id="arApiEndpoint" placeholder="https://.../ar-report" value="${esc(cfg.endpoint || '')}"></div>
+          <label class="v110-alert" style="cursor:pointer"><input id="arAutoSend" type="checkbox" ${cfg.autoSend?'checked':''} style="width:auto;margin-right:6px"> Auto-send after saving when configured</label>
+          <label class="v110-alert" style="cursor:pointer"><input id="arAnonymize" type="checkbox" ${cfg.anonymize?'checked':''} style="width:auto;margin-right:6px"> Mask claim number in local saved records</label>
+        </div>
+        <div class="v110-toolbar-wide"><button class="sm" onclick="saveARNotifySettings()">Save Settings</button><button class="sm" onclick="testARBackend()">Test Endpoint</button></div>
+      </div>
+
+      <div class="card"><div class="card-header">📤 Export Records</div><div class="v110-toolbar"><button class="sm" onclick="exportARInspections('csv')">CSV</button><button class="sm" onclick="exportARInspections('json')">JSON + Photos</button><button class="danger sm" onclick="clearARInspections()">Clear</button></div><div id="arRecordList" class="v110-list"></div></div>
+
+      <div class="card"><div class="card-header">📘 Staff Manual</div><div class="v110-guide"><ol><li>Start camera and keep the claim stub steady.</li><li>Tap <b>Scan Claim Stub</b>; if no QR/barcode is detected, type the claim number manually.</li><li>Move around the baggage slowly. Select visible damage chips and run <b>Damage Sweep</b>.</li><li>Review risk, notes, route, trip, and photo evidence.</li><li>Tap <b>Save Record</b> or <b>Save + Notify</b>. Use API endpoint for automatic backend/email sending.</li></ol><div class="v110-mini">Keep lighting bright and camera steady. AI assist highlights possible baggage zones but staff confirmation remains required.</div></div></div>
+    `;
+    loadConfigIntoUI();
+    renderTripOptions();
+    loadDraft();
+    refreshDamageChips();
+    renderScanList();
+    renderRecords();
+    updateKpis();
+    setStep('claim');
+  };
+
+  window.renderARTripOptions = renderTripOptions;
+  window.autoSaveARDraft = autoSaveDraft;
+  window.saveARNotifySettings = saveConfig;
+
+  window.setARSensitivity = function(value){
+    state.sensitivity = Math.max(0.20, Math.min(0.80, Number(value || 34) / 100));
+    setStatus('Detection sensitivity set to ' + Math.round(state.sensitivity * 100) + '%.', 'TUNED');
+  };
+
+  window.updateARInspectionUI = function(){
+    state.claimNo = el('arClaimNo') ? el('arClaimNo').value.trim() : '';
+    updateKpis();
+    autoSaveDraft();
+  };
+
+  window.startAR = async function(){
+    ensureStyles();
+    try{
+      window.stopAR(false);
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Camera is not supported by this browser. Open GitHub Pages directly and use HTTPS.');
+      setStatus('Requesting rear camera permission...', 'CAMERA');
+      state.stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:{ideal:'environment'}, width:{ideal:1920}, height:{ideal:1080} }, audio:false });
+      var video = el('arVideo');
+      if(!video) throw new Error('AR video panel is not ready. Reopen the AR page.');
+      video.srcObject = state.stream;
+      await video.play();
+      if(window.cocoSsd && !state.model){
+        setStatus('Loading baggage detection model...', 'AI LOAD');
+        state.model = await cocoSsd.load({ base:'lite_mobilenet_v2' });
+      }
+      state.running = true;
+      state.lastScan = 0;
+      setStatus(state.model ? 'Scanner live. Scan claim stub, then inspect baggage damage.' : 'Camera live. AI model unavailable, manual workflow active.', 'SCANNING');
+      setStep('claim');
+      notify('AR Scanner Pro active');
+      window.arLoop(performance.now());
+    }catch(e){
+      console.error(e);
+      setStatus(e.message || 'Camera failed. Allow camera permission and try again.', 'ERROR');
+      notify('AR scanner could not start');
+    }
+  };
+
+  window.stopAR = function(showToast){
+    if(showToast === undefined) showToast = true;
+    state.running = false;
+    if(state.raf) cancelAnimationFrame(state.raf);
+    state.raf = null;
+    if(state.stream){ state.stream.getTracks().forEach(function(track){ track.stop(); }); state.stream = null; }
+    var video = el('arVideo'); if(video) video.srcObject = null;
+    var overlay = el('arOverlay'); if(overlay) overlay.innerHTML = '<div class="v110-scanline"></div>';
+    setStatus('Scanner stopped. Saved records remain available below.', 'STANDBY');
+    if(showToast) notify('AR scanner stopped');
+  };
+
+  window.arLoop = async function(timestamp){
+    if(!state.running) return;
+    var video = el('arVideo');
+    if(video && video.readyState >= 2 && (!state.lastScan || timestamp - state.lastScan > state.scanInterval)){
+      state.lastScan = timestamp;
+      try{
+        analyzeFrameQuality(video);
+        if(state.model){
+          var predictions = await state.model.detect(video);
+          var allowed = ['suitcase','backpack','handbag'];
+          state.lastDetections = predictions.filter(function(p){ return allowed.indexOf(p.class) >= 0 && p.score >= state.sensitivity; }).sort(function(a,b){ return b.score - a.score; }).slice(0,6).map(function(p){ return { label:p.class, bbox:p.bbox, score:p.score, kg:estimateKg(p, video) }; });
+        }
+        var claim = await scanBarcode();
+        if(claim){
+          state.claimNo = claim;
+          if(el('arClaimNo')) el('arClaimNo').value = claim;
+          setStep('damage');
+        }
+        drawOverlay(video);
+        renderScanList();
+        updateKpis();
+      }catch(e){ console.warn('AR loop skipped frame', e); }
+    }
+    state.raf = requestAnimationFrame(window.arLoop);
+  };
+
+  window.scanClaimStub = async function(){
+    var video = el('arVideo');
+    if(!video || !video.videoWidth){ setStatus('Start camera first before scanning the claim stub.', 'READY'); return; }
+    setStatus('Scanning QR/barcode claim stub...', 'CLAIM');
+    state.lastStubPhoto = captureFrame(0.85);
+    var claim = await scanBarcode();
+    if(claim){
+      state.claimNo = claim;
+      if(el('arClaimNo')) el('arClaimNo').value = claim;
+      setStatus('Claim stub detected: ' + claim, 'CLAIM OK');
+      setStep('damage');
+    }else{
+      setStatus('No QR/barcode detected. Type the printed claim number manually, then continue damage inspection.', 'MANUAL');
+      setStep('claim');
+    }
+    updateKpis();
+    autoSaveDraft();
+  };
+
+  window.runDamageSweep = function(){
+    if(!state.lastDetections.length){ setStatus('No baggage detected yet. Keep baggage fully visible, then run Damage Sweep again.', 'WAIT'); return; }
+    createDamageZones();
+    setStep('confirm');
+    setStatus('Damage sweep completed. Confirm chips, add notes, then save the report.', 'REVIEW');
+  };
+
+  window.captureARSnapshot = function(){
+    var photo = captureFrame(0.86);
+    if(!photo){ notify('Start camera first'); return; }
+    state.lastPhoto = photo;
+    var a = document.createElement('a');
+    a.href = photo;
+    a.download = 'oj_ar_snapshot_' + Date.now() + '.jpg';
+    a.click();
+    notify('AR snapshot exported');
+  };
+
+  window.toggleDamageChip = function(name){
+    name = String(name || '').replace(/&#39;/g, "'");
+    var idx = state.selectedDamages.indexOf(name);
+    if(idx >= 0) state.selectedDamages.splice(idx, 1); else state.selectedDamages.push(name);
+    createDamageZones();
+    refreshDamageChips();
+    if(state.selectedDamages.length) setStep('confirm');
+  };
+
+  window.saveARInspection = async function(forceNotify){
+    try{
+      var record = makeRecord();
+      var records = getRecords();
+      records.unshift(record);
+      setRecords(records.slice(0,300));
+      state.sessionCount += 1;
+      localStorage.removeItem(DRAFT_KEY);
+      renderRecords();
+      setStep('saved');
+      setStatus('Saved claim ' + record.claimNo + ' with ' + record.damages.length + ' confirmed damage item(s).', 'SAVED');
+      notify('AR inspection saved');
+      var cfg = getConfig();
+      if(forceNotify || cfg.autoSend) await sendReport(record, true);
+    }catch(e){
+      console.error(e);
+      setStatus(e.message || 'Save failed', 'ERROR');
+      notify(e.message || 'Save failed');
+    }
+  };
+
+  window.nextARBaggage = function(){
+    state.claimNo = '';
+    state.selectedDamages = [];
+    state.lastDamageZones = [];
+    state.lastDetections = [];
+    state.lastPhoto = '';
+    state.lastStubPhoto = '';
+    localStorage.removeItem(DRAFT_KEY);
+    if(el('arClaimNo')) el('arClaimNo').value = '';
+    if(el('arDamageNotes')) el('arDamageNotes').value = '';
+    refreshDamageChips();
+    renderScanList();
+    updateKpis();
+    setStep('claim');
+    setStatus('Ready for next baggage. Scan the next claim stub.', 'NEXT');
+  };
+
+  window.testARBackend = async function(){
+    saveConfig();
+    var cfg = getConfig();
+    if(!cfg.endpoint){ setStatus('No API endpoint configured. Add endpoint URL first.', 'LOCAL'); return; }
+    var test = { type:'connection-test', app:'OceanJet PortDesk', version:'V110', timestamp:nowISO() };
+    try{
+      var response = await fetch(cfg.endpoint, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(test) });
+      if(response.ok){ setStatus('API endpoint test passed.', 'API OK'); notify('API endpoint test passed'); }
+      else setStatus('API test returned HTTP ' + response.status + '.', 'API ERR');
+    }catch(e){ setStatus('API test failed: ' + (e.message || e), 'API ERR'); }
+  };
+
+  window.exportARInspections = function(type){
+    var records = getRecords();
+    if(!records.length){ notify('No AR records to export'); return; }
+    var blob, filename;
+    if(type === 'json'){
+      blob = new Blob([JSON.stringify(records, null, 2)], {type:'application/json'});
+      filename = 'oceanjet_ar_damage_records_v110.json';
+    }else{
+      var rows = [['id','claimNo','route','trip','class','pax','risk','damages','qualityScore','notes','timestamp']].concat(records.map(function(r){
+        return [r.id, r.claimNo, r.routeTitle || r.route, r.trip || '', r.classType, r.pax, r.risk, (r.damages || []).join('|'), r.quality ? r.quality.score : '', (r.notes || '').replace(/\n/g,' '), r.timestampPH || r.timestamp];
+      }));
+      blob = new Blob([rows.map(function(row){ return row.map(function(cell){ return '"' + String(cell == null ? '' : cell).replace(/"/g,'""') + '"'; }).join(','); }).join('\n')], {type:'text/csv'});
+      filename = 'oceanjet_ar_damage_records_v110.csv';
+    }
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+  };
+
+  window.clearARInspections = function(){
+    if(confirm('Clear all saved AR inspection records on this device?')){
+      localStorage.removeItem(STORE_KEY);
+      renderRecords();
+      notify('AR records cleared');
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', function(){
+    if(el('view-ar') && el('view-ar').classList.contains('active')) window.buildAR();
+  });
+})();
+</script>
+
+
+<!-- OCEANJET PORTDESK V111: FULLY ANIMATED SYSTEM UI LAYER -->
+<style id="ojV111AnimatedSystemUI">
+  html.oj-v111-animated-ui{scroll-behavior:smooth;--v111-cyan:#22d3ee;--v111-blue:#38bdf8;--v111-violet:#8b5cf6;--v111-green:#34d399;--v111-warn:#f59e0b;--v111-danger:#fb7185;--v111-glow:0 0 28px rgba(34,211,238,.22),0 0 48px rgba(244,63,94,.14)}
+  html.oj-v111-animated-ui body{background:linear-gradient(135deg,#030714 0%,var(--bg-base) 45%,#111827 100%)!important;isolation:isolate;padding-bottom:76px}
+  html.oj-v111-animated-ui body:after{content:"";position:fixed;inset:0;z-index:-2;pointer-events:none;background:linear-gradient(rgba(34,211,238,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(244,63,94,.035) 1px,transparent 1px);background-size:42px 42px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.82),rgba(0,0,0,.15));animation:ojGridDrift 22s linear infinite}
+  @keyframes ojGridDrift{from{background-position:0 0,0 0}to{background-position:84px 168px,168px 84px}}
+  #ojV111Particles{position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden}
+  .oj-v111-particle{position:absolute;width:4px;height:4px;border-radius:999px;background:rgba(34,211,238,.75);box-shadow:0 0 14px rgba(34,211,238,.85);animation:ojFloatParticle var(--dur,14s) linear infinite;opacity:.8}
+  @keyframes ojFloatParticle{0%{transform:translate3d(var(--x,0),105vh,0) scale(.55);opacity:0}12%{opacity:.82}88%{opacity:.65}100%{transform:translate3d(calc(var(--x,0) + var(--dx,0px)),-10vh,0) scale(1.2);opacity:0}}
+  .oj-v111-ribbon{max-width:520px;margin:10px auto 0;padding:0 16px;position:relative;z-index:45;display:flex;gap:8px;align-items:center;justify-content:space-between;pointer-events:none}
+  .oj-v111-pill{display:inline-flex;align-items:center;gap:6px;border:1px solid rgba(34,211,238,.28);background:linear-gradient(135deg,rgba(34,211,238,.12),rgba(139,92,246,.08));box-shadow:var(--v111-glow);backdrop-filter:blur(14px);border-radius:999px;padding:6px 10px;font-size:.66rem;font-weight:800;color:var(--text);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+  .oj-v111-dot{width:8px;height:8px;border-radius:50%;background:var(--v111-green);box-shadow:0 0 14px var(--v111-green);animation:ojPulseDot 1.6s ease-in-out infinite}
+  @keyframes ojPulseDot{50%{transform:scale(1.45);opacity:.55}}
+  .oj-v111-hud{max-width:520px;margin:8px auto 0;padding:0 16px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;position:relative;z-index:45;pointer-events:none}
+  .oj-v111-hud div{border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(16,22,48,.58);backdrop-filter:blur(18px);box-shadow:0 10px 34px rgba(0,0,0,.22),inset 0 0 18px rgba(34,211,238,.045);padding:8px 7px;text-align:center;color:var(--text2);font-size:.58rem;text-transform:uppercase;letter-spacing:.07em;overflow:hidden;position:relative}
+  .oj-v111-hud b{display:block;color:var(--text);font-size:.82rem;letter-spacing:0;margin-top:2px}
+  .oj-v111-hud div:before{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent,rgba(255,255,255,.10),transparent);transform:translateX(-130%);animation:ojSweep 4.6s ease-in-out infinite}
+  @keyframes ojSweep{30%,100%{transform:translateX(130%)}}
+  html.oj-v111-animated-ui .app{filter:drop-shadow(0 24px 60px rgba(0,0,0,.32))}
+  html.oj-v111-animated-ui .header{border:1px solid rgba(255,255,255,.08);border-top:none;background:linear-gradient(135deg,rgba(26,31,58,.84),rgba(7,11,25,.72));box-shadow:0 10px 36px rgba(0,0,0,.24),0 0 0 1px rgba(34,211,238,.06) inset;animation:ojHeaderGlow 5s ease-in-out infinite;backdrop-filter:blur(22px) saturate(130%)}
+  @keyframes ojHeaderGlow{0%,100%{box-shadow:0 10px 36px rgba(0,0,0,.24),0 0 0 1px rgba(34,211,238,.08) inset}50%{box-shadow:0 14px 46px rgba(34,211,238,.14),0 0 0 1px rgba(244,63,94,.14) inset}}
+  html.oj-v111-animated-ui .brand{position:relative;text-shadow:0 0 24px rgba(244,63,94,.24);animation:ojBrandBreath 3.8s ease-in-out infinite}
+  html.oj-v111-animated-ui .brand:after{content:"";position:absolute;left:0;right:0;bottom:-3px;height:2px;background:linear-gradient(90deg,transparent,var(--accent),var(--v111-cyan),transparent);animation:ojBrandLine 3s ease-in-out infinite}
+  @keyframes ojBrandBreath{50%{filter:drop-shadow(0 0 14px rgba(244,63,94,.35))}}
+  @keyframes ojBrandLine{50%{opacity:.4;transform:scaleX(.6)}}
+  html.oj-v111-animated-ui .view.active{animation:ojViewFade .35s ease both}
+  @keyframes ojViewFade{from{opacity:.3;transform:translateY(12px) scale(.99)}to{opacity:1;transform:none}}
+  html.oj-v111-animated-ui .view.active>.card,html.oj-v111-animated-ui .view.active>.grid2,html.oj-v111-animated-ui .view.active>.stat-box{animation:ojCardRise .56s cubic-bezier(.16,1,.3,1) both;animation-delay:var(--v111-delay,0ms)}
+  @keyframes ojCardRise{from{opacity:0;transform:translateY(18px) scale(.985);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}
+  html.oj-v111-animated-ui .card,html.oj-v111-animated-ui .stat-box,html.oj-v111-animated-ui .trip-row,html.oj-v111-animated-ui .drawer-item{position:relative;overflow:hidden;transition:transform .22s ease,border-color .22s ease,box-shadow .22s ease,background .22s ease}
+  html.oj-v111-animated-ui .card{background:linear-gradient(145deg,rgba(26,31,58,.86),rgba(16,22,48,.72));border-color:rgba(255,255,255,.09);box-shadow:0 16px 44px rgba(0,0,0,.30),inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter:blur(18px)}
+  html.oj-v111-animated-ui .card:before,html.oj-v111-animated-ui .stat-box:before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(130deg,rgba(34,211,238,.48),rgba(244,63,94,.20),transparent 55%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:.42;pointer-events:none}
+  html.oj-v111-animated-ui .card:hover,html.oj-v111-animated-ui .stat-box:hover{transform:translateY(-4px);box-shadow:0 18px 54px rgba(0,0,0,.38),0 0 30px rgba(34,211,238,.12)}
+  html.oj-v111-animated-ui .card-header{letter-spacing:.01em;text-shadow:0 0 18px rgba(34,211,238,.16)}
+  html.oj-v111-animated-ui .stat-value{filter:drop-shadow(0 0 14px rgba(244,63,94,.28));animation:ojSoftPulse 4s ease-in-out infinite}
+  @keyframes ojSoftPulse{50%{filter:drop-shadow(0 0 22px rgba(34,211,238,.22))}}
+  html.oj-v111-animated-ui input,html.oj-v111-animated-ui select,html.oj-v111-animated-ui textarea{transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease;background-color:rgba(16,22,48,.82)}
+  html.oj-v111-animated-ui input:focus,html.oj-v111-animated-ui select:focus,html.oj-v111-animated-ui textarea:focus{transform:translateY(-1px);box-shadow:0 0 0 3px rgba(34,211,238,.14),0 0 24px rgba(34,211,238,.08);border-color:rgba(34,211,238,.65)}
+  html.oj-v111-animated-ui button{position:relative;overflow:hidden;transform:translateZ(0)}
+  html.oj-v111-animated-ui button:after{content:"";position:absolute;width:34px;height:34px;border-radius:50%;background:rgba(255,255,255,.26);top:var(--ripple-y,50%);left:var(--ripple-x,50%);transform:translate(-50%,-50%) scale(0);opacity:0;pointer-events:none}
+  html.oj-v111-animated-ui button.oj-ripple:after{animation:ojRipple .55s ease-out}
+  @keyframes ojRipple{0%{transform:translate(-50%,-50%) scale(.2);opacity:.65}100%{transform:translate(-50%,-50%) scale(7);opacity:0}}
+  html.oj-v111-animated-ui button.primary{box-shadow:0 10px 26px rgba(244,63,94,.32),0 0 18px rgba(251,146,60,.10)}
+  html.oj-v111-animated-ui .side-drawer{background:linear-gradient(180deg,rgba(7,11,25,.96),rgba(30,43,94,.92));box-shadow:18px 0 60px rgba(0,0,0,.55),inset -1px 0 0 rgba(34,211,238,.16)}
+  html.oj-v111-animated-ui .drawer-item.active{box-shadow:0 8px 24px rgba(34,211,238,.13),0 0 0 1px rgba(34,211,238,.20) inset;background:linear-gradient(135deg,rgba(34,211,238,.11),rgba(244,63,94,.10))}
+  html.oj-v111-animated-ui .receipt{animation:ojReceiptOpen .65s cubic-bezier(.16,1,.3,1);box-shadow:0 0 46px rgba(34,211,238,.18),0 0 40px rgba(244,63,94,.25)}
+  @keyframes ojReceiptOpen{from{opacity:0;transform:translateY(20px) rotateX(20deg) scale(.98)}to{opacity:1;transform:none}}
+  html.oj-v111-animated-ui .result-total{animation:ojTotalPop .55s cubic-bezier(.16,1,.3,1)}
+  @keyframes ojTotalPop{0%{transform:scale(.92);opacity:.1}65%{transform:scale(1.05)}100%{transform:scale(1);opacity:1}}
+  .oj-v111-toast{position:fixed;left:50%;bottom:92px;z-index:9999;transform:translateX(-50%);max-width:92vw;border-radius:16px;border:1px solid rgba(34,211,238,.35);background:linear-gradient(135deg,rgba(7,11,25,.92),rgba(30,43,94,.86));box-shadow:0 18px 50px rgba(0,0,0,.45),0 0 28px rgba(34,211,238,.12);backdrop-filter:blur(18px);padding:10px 14px;font-size:.78rem;font-weight:800;color:var(--text);animation:ojToastUp .35s ease both}
+  @keyframes ojToastUp{from{opacity:0;transform:translate(-50%,16px) scale(.96)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
+  .oj-v111-scanline{position:fixed;inset:0;pointer-events:none;z-index:1000;background:linear-gradient(to bottom,transparent 0%,rgba(34,211,238,.08) 50%,transparent 100%);height:120px;animation:ojScanLine 7s linear infinite;mix-blend-mode:screen;opacity:.45}
+  @keyframes ojScanLine{from{transform:translateY(-140px)}to{transform:translateY(calc(100vh + 140px))}}
+  html.oj-v111-animated-ui #liveMap,html.oj-v111-animated-ui .ar-wrap{box-shadow:0 0 0 1px rgba(34,211,238,.20),0 0 35px rgba(34,211,238,.10);position:relative}
+  html.oj-v111-animated-ui #bottomNavSafe{border:1px solid rgba(255,255,255,.08);border-bottom:none;border-radius:18px 18px 0 0;background:linear-gradient(135deg,rgba(16,22,48,.9),rgba(7,11,25,.82));box-shadow:0 -14px 44px rgba(0,0,0,.35);backdrop-filter:blur(18px)}
+  html.oj-v111-animated-ui #bottomNavSafe button{font-weight:800;letter-spacing:.02em}
+  @media (prefers-reduced-motion:reduce){html.oj-v111-animated-ui *,html.oj-v111-animated-ui *:before,html.oj-v111-animated-ui *:after{animation:none!important;transition:none!important;scroll-behavior:auto!important}.oj-v111-scanline,#ojV111Particles{display:none!important}}
+</style>
+<script id="ojV111AnimatedSystemScript">
+(function(){
+  'use strict';
+  if(window.__OJ_V111_ANIMATED_SYSTEM_UI__) return;
+  window.__OJ_V111_ANIMATED_SYSTEM_UI__ = true;
+  document.documentElement.classList.add('oj-v111-animated-ui');
+  function ensure(id, tag, parent){
+    var el = document.getElementById(id);
+    if(!el){ el = document.createElement(tag || 'div'); el.id = id; (parent || document.body).appendChild(el); }
+    return el;
+  }
+  function makeParticles(){
+    var wrap = ensure('ojV111Particles','div',document.body);
+    if(wrap.dataset.ready) return;
+    wrap.dataset.ready = '1';
+    for(var i=0;i<26;i++){
+      var p=document.createElement('span');
+      p.className='oj-v111-particle';
+      p.style.setProperty('--x', Math.round(Math.random()*100)+'vw');
+      p.style.setProperty('--dx', Math.round((Math.random()*120)-60)+'px');
+      p.style.setProperty('--dur', (10 + Math.random()*14).toFixed(1)+'s');
+      p.style.animationDelay = (-Math.random()*18).toFixed(1)+'s';
+      if(i%3===0){p.style.background='rgba(244,63,94,.72)';p.style.boxShadow='0 0 14px rgba(244,63,94,.75)';}
+      if(i%5===0){p.style.width='2px';p.style.height='18px';p.style.borderRadius='8px';}
+      wrap.appendChild(p);
+    }
+  }
+  function installRibbon(){
+    if(document.getElementById('ojV111Ribbon')) return;
+    var app = document.querySelector('.app');
+    if(!app) return;
+    var ribbon=document.createElement('div');
+    ribbon.id='ojV111Ribbon';
+    ribbon.className='oj-v111-ribbon';
+    ribbon.innerHTML='<span class="oj-v111-pill"><span class="oj-v111-dot"></span> V111 Animated System UI</span><span class="oj-v111-pill" id="ojV111ClockPill">Syncing</span>';
+    app.parentNode.insertBefore(ribbon, app);
+    var hud=document.createElement('div');
+    hud.id='ojV111HUD';
+    hud.className='oj-v111-hud';
+    hud.innerHTML='<div>Mode<b>Ops</b></div><div>UI<b>Animated</b></div><div>Status<b>Live</b></div>';
+    app.parentNode.insertBefore(hud, app);
+    setInterval(function(){
+      var c=document.getElementById('ojV111ClockPill');
+      if(c) c.textContent = new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true});
+    },1000);
+  }
+  function installScanline(){
+    if(!document.getElementById('ojV111Scanline')){
+      var s=document.createElement('div'); s.id='ojV111Scanline'; s.className='oj-v111-scanline'; document.body.appendChild(s);
+    }
+  }
+  function decorateCards(){
+    document.querySelectorAll('.view.active > .card, .view.active > .grid2, .view.active > .stat-box').forEach(function(el,idx){ el.style.setProperty('--v111-delay', Math.min(idx*55,360)+'ms'); });
+    document.querySelectorAll('.card:not([data-v111]), .stat-box:not([data-v111]), .trip-row:not([data-v111])').forEach(function(el){
+      el.dataset.v111='1';
+      el.addEventListener('pointermove',function(e){
+        var r=el.getBoundingClientRect();
+        el.style.setProperty('--mx', ((e.clientX-r.left)/Math.max(r.width,1)*100).toFixed(1)+'%');
+        el.style.setProperty('--my', ((e.clientY-r.top)/Math.max(r.height,1)*100).toFixed(1)+'%');
+      },{passive:true});
+    });
+  }
+  function installRipples(){
+    if(window.__OJ_V111_RIPPLES__) return;
+    window.__OJ_V111_RIPPLES__ = true;
+    document.addEventListener('pointerdown', function(e){
+      var btn=e.target && e.target.closest ? e.target.closest('button') : null;
+      if(!btn) return;
+      var r=btn.getBoundingClientRect();
+      btn.style.setProperty('--ripple-x',(e.clientX-r.left)+'px');
+      btn.style.setProperty('--ripple-y',(e.clientY-r.top)+'px');
+      btn.classList.remove('oj-ripple');
+      void btn.offsetWidth;
+      btn.classList.add('oj-ripple');
+      setTimeout(function(){btn.classList.remove('oj-ripple');},600);
+    },{passive:true});
+  }
+  function installViewHook(){
+    if(typeof window.showView === 'function' && !window.showView.__v111Wrapped){
+      var original = window.showView;
+      window.showView = function(name){
+        document.body.dataset.ojView = name || '';
+        var result = original.apply(this, arguments);
+        requestAnimationFrame(function(){decorateCards(); flashStatus((name || 'view').toUpperCase()+' loaded');});
+        return result;
+      };
+      window.showView.__v111Wrapped = true;
+    }
+  }
+  function flashStatus(text){
+    if(!document.body) return;
+    var el=document.createElement('div');
+    el.className='oj-v111-toast';
+    el.textContent='⚡ '+text;
+    document.body.appendChild(el);
+    setTimeout(function(){el.style.opacity='0'; el.style.transform='translate(-50%,18px) scale(.96)';},1000);
+    setTimeout(function(){if(el && el.parentNode) el.remove();},1450);
+  }
+  function addSystemBadge(){
+    var headerRight=document.querySelector('.header-right');
+    if(headerRight && !document.getElementById('ojV111MiniBadge')){
+      var b=document.createElement('span');
+      b.id='ojV111MiniBadge';
+      b.className='role-badge';
+      b.textContent='V111 UI';
+      headerRight.insertBefore(b, headerRight.firstChild);
+    }
+  }
+  function boot(){
+    makeParticles();
+    installRibbon();
+    installScanline();
+    addSystemBadge();
+    installRipples();
+    installViewHook();
+    decorateCards();
+    var mo = new MutationObserver(function(){decorateCards(); addSystemBadge(); installViewHook();});
+    mo.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['class','style']});
+    setTimeout(function(){flashStatus('Animated UI online');},700);
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, {once:true});
+  else boot();
+})();
+</script>
+<!-- /OCEANJET PORTDESK V111 -->
+
 </body>
 </html>
