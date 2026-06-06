@@ -235,7 +235,7 @@
 
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-    <title>Ocean Fast Ferries • Baggage Pro + AI</title>
+    <title>Ocean Fast Ferries • Baggage Pro V101</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <style>
         :root {
@@ -554,7 +554,87 @@ const CEBU_ROUTE_LABELS = {
   cebu_tagbilaran:'Tagbilaran', cebu_ormoc:'Ormoc', cebu_getafe:'Getafe', cebu_palompon:'Palompon',
   cebu_maasin:'Maasin', cebu_dumaguete:'Dumaguete', cebu_surigao:'Surigao', cebu_siquijor:'Siquijor'
 };
+const FARE_CLASSES = ['TC/OA','BC','ST','MI'];
+const FARE_CLASS_LABELS = {'TC/OA':'Tourist/Open Air','BC':'Business Class','ST':'Student','MI':'Minor'};
+
+// V101: passenger fare engine for connecting trips.
+// Example: Cebu → Dumaguete = Cebu → Tagbilaran + Tagbilaran → Dumaguete.
+// This changes passenger fare display/calculation only. Baggage slabs and baggage formulas remain untouched.
+const CONNECTING_FARE_RULES = {
+  cebu_dumaguete: { via:'Tagbilaran', legs:['cebu_tagbilaran','tagbilaran_dumaguete'] },
+  cebu_siquijor: { via:'Tagbilaran', legs:['cebu_tagbilaran','tagbilaran_siquijor'] },
+  cebu_surigao: { via:'Maasin', legs:['cebu_maasin','maasin_surigao'] }
+};
+const KNOWN_CONNECTION_PORTS = ['tagbilaran','maasin'];
+const titleCase = str => String(str || '').replace(/_/g,' ').replace(/\b\w/g, ch => ch.toUpperCase());
 const routeName = key => CEBU_ROUTE_LABELS[key] || (DB.schedules?.[key]?.title || key).replace(/^Cebu to /i,'');
+
+function inferConnectingFareRule(route) {
+  if (CONNECTING_FARE_RULES[route]) return CONNECTING_FARE_RULES[route];
+  if (!route || !route.startsWith('cebu_')) return null;
+  const dest = route.replace(/^cebu_/, '');
+  const schedule = DB.schedules?.[route];
+  const scheduleText = [
+    schedule?.title || '',
+    ...(schedule?.trips || []).flatMap(t => [t.remarks || '', t.vessel || ''])
+  ].join(' ').toLowerCase();
+
+  for (const via of KNOWN_CONNECTION_PORTS) {
+    const firstLeg = `cebu_${via}`;
+    const secondLeg = `${via}_${dest}`;
+    const mentionsVia = scheduleText.includes(`via ${via}`) || scheduleText.includes(`through ${via}`) || scheduleText.includes(via);
+    if (mentionsVia && DB.paxFares?.[firstLeg] && DB.paxFares?.[secondLeg]) {
+      return { via:titleCase(via), legs:[firstLeg, secondLeg], inferred:true };
+    }
+  }
+  return null;
+}
+
+function getPassengerFare(route) {
+  const rule = inferConnectingFareRule(route);
+  if (!rule) return DB.paxFares?.[route] || null;
+  const combined = {};
+  for (const cls of FARE_CLASSES) {
+    let total = 0;
+    for (const leg of rule.legs) {
+      const amount = Number(DB.paxFares?.[leg]?.[cls]);
+      if (!Number.isFinite(amount)) return DB.paxFares?.[route] || null;
+      total += amount;
+    }
+    combined[cls] = total;
+  }
+  return combined;
+}
+
+function getFareRuleForDisplay(route) {
+  return inferConnectingFareRule(route);
+}
+
+function fareBreakdownHtml(route) {
+  const rule = getFareRuleForDisplay(route);
+  if (!rule) return '';
+  const rows = rule.legs.map(leg => {
+    const fare = DB.paxFares?.[leg] || {};
+    return `<tr><td>${DB.schedules?.[leg]?.title || titleCase(leg)}</td><td style="text-align:right">${fmtPHP(Number(fare['TC/OA'] || 0))}</td><td style="text-align:right">${fmtPHP(Number(fare['BC'] || 0))}</td></tr>`;
+  }).join('');
+  return `
+    <div style="margin-top:10px;padding:10px;background:rgba(244,63,94,0.08);border:1px solid var(--border);border-radius:10px;font-size:0.78rem">
+      <b>🔗 Connecting fare via ${rule.via}</b><br>
+      <span style="color:var(--text2)">Passenger fare is auto-calculated by adding each leg.</span>
+      <table style="margin-top:6px"><tr><th>Leg</th><th style="text-align:right">Tourist</th><th style="text-align:right">Business</th></tr>${rows}</table>
+    </div>`;
+}
+
+function applyConnectingPassengerFares() {
+  const keys = new Set([...Object.keys(CONNECTING_FARE_RULES), ...Object.keys(DB.schedules || {})]);
+  keys.forEach(route => {
+    const rule = inferConnectingFareRule(route);
+    if (!rule) return;
+    const combined = getPassengerFare(route);
+    if (combined) DB.paxFares[route] = combined;
+  });
+}
+applyConnectingPassengerFares();
 
 function slabCost(E, rates) {
   const [r0, r1, r2] = rates;
@@ -670,6 +750,13 @@ function buildDashboard() {
       <div class="card-header">⚓ Cebu Baggage Destinations</div>
       <div class="grid2" id="cebuQuickRoutes">
         ${CEBU_BAGGAGE_ROUTES.map(r => `<button class="sm" onclick="navigate('calculator'); setTimeout(()=>{ const el=document.getElementById('calcRoute'); if(el){ el.value='${r}'; } },80)">${routeName(r)}</button>`).join('')}
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div class="card-header">🔗 Passenger Connecting Fare Engine</div>
+      <div style="font-size:0.82rem;color:var(--text2);line-height:1.7">
+        Cebu → Dumaguete, Cebu → Siquijor, and Cebu → Surigao passenger fares are now calculated from their connecting legs.
+        Baggage computation still uses the original baggage slab logic.
       </div>
     </div>
     <div class="card">
@@ -898,9 +985,10 @@ function buildFares() {
 }
 
 function renderFareTable() {
-  const key = $('fareRoute').value, data = DB.paxFares[key];
+  const key = $('fareRoute').value, data = getPassengerFare(key);
   if (!data) return;
-  $('fareTable').innerHTML = `<table>${Object.entries(data).map(([cls,price]) => `<tr><td>${cls}</td><td style="text-align:right;font-weight:600">${price!=null?fmtPHP(price):'—'}</td></tr>`).join('')}</table>`;
+  const rows = FARE_CLASSES.map(cls => `<tr><td>${FARE_CLASS_LABELS[cls] || cls}</td><td style="text-align:right;font-weight:600">${data[cls]!=null?fmtPHP(Number(data[cls])):'—'}</td></tr>`).join('');
+  $('fareTable').innerHTML = `<table>${rows}</table>${fareBreakdownHtml(key)}`;
 }
 
 function renderSlabDisplay() {
@@ -921,12 +1009,14 @@ function buildSchedules() {
 function renderSchedule() {
   const key = $('schedRoute').value, data = DB.schedules[key];
   if (!data) return;
-  const fare = DB.paxFares[key];
-  const fareHtml = fare ? `<div style="margin:8px 0;padding:8px;background:rgba(0,255,255,0.05);border:1px solid var(--border);border-radius:8px"><b>Fares:</b> Tourist ₱${fare['TC/OA']} | Business ₱${fare['BC']} | Student ₱${fare['ST']} | Minor ₱${fare['MI']}</div>` : '';
+  const fare = getPassengerFare(key);
+  const rule = getFareRuleForDisplay(key);
+  const fareHtml = fare ? `<div style="margin:8px 0;padding:8px;background:rgba(0,255,255,0.05);border:1px solid var(--border);border-radius:8px"><b>Fares:</b> Tourist ${fmtPHP(Number(fare['TC/OA']))} | Business ${fmtPHP(Number(fare['BC']))} | Student ${fmtPHP(Number(fare['ST']))} | Minor ${fmtPHP(Number(fare['MI']))}${rule ? `<br><small style="color:var(--text2)">Auto-computed connecting fare via ${rule.via}: ${rule.legs.map(leg => DB.schedules?.[leg]?.title || titleCase(leg)).join(' + ')}</small>` : ''}</div>` : '';
   const tripsHtml = data.trips.length? data.trips.map(t => `<div class="trip-row"><b>${t.dep}</b> → <b>${t.arr||''}</b> &nbsp;|&nbsp; ${t.vessel}${t.remarks?`<br><small style="color:var(--text3)">📌 ${t.remarks}</small>`:''}</div>`).join('') : '<p style="color:var(--text2)">No trips scheduled</p>';
   $('schedList').innerHTML = `
     <div style="color:var(--text3);margin-bottom:10px">⏱ Travel time: <b>${data.travel}</b></div>
     ${fareHtml}
+    ${fareBreakdownHtml(key)}
     ${tripsHtml}
   `;
 }
@@ -1255,11 +1345,13 @@ function aiOfflineRespond(q) {
         if (/business|bc/i.test(q)) cls='BC';
         else if (/student|st/i.test(q)) cls='ST';
         else if (/military|mi/i.test(q)) cls='MI';
-        const price = DB.paxFares[routeName][cls];
-        if (price) return `Passenger fare ${routeName} (${cls}): ${fmtPHP(price)}`;
+        const fareSet = getPassengerFare(routeName);
+        const price = fareSet?.[cls];
+        const rule = getFareRuleForDisplay(routeName);
+        if (price) return `Passenger fare ${routeName} (${cls}): ${fmtPHP(Number(price))}${rule ? `\nAuto-computed via ${rule.via}: ${rule.legs.map(leg => DB.schedules?.[leg]?.title || titleCase(leg)).join(' + ')}` : ''}`;
       }
     }
-    return "Passenger fares (Tourist/TC):\n• Tagbilaran ₱1,000\n• Ormoc/Palompon ₱1,430\n• Dumaguete ₱2,170\n• Surigao ₱2,470\n• Getafe ₱585\n• Siquijor ₱1,200\nAsk for Business, Student, Military.";
+    return "Passenger fares (Tourist/TC):\n• Tagbilaran: direct fare\n• Ormoc/Palompon/Getafe/Maasin: direct fare\n• Dumaguete: Cebu→Tagbilaran + Tagbilaran→Dumaguete\n• Siquijor: Cebu→Tagbilaran + Tagbilaran→Siquijor\n• Surigao: Cebu→Maasin + Maasin→Surigao\nAsk for Business, Student, Military, or open the Fares tab for exact computed totals.";
   }
   if (/\b(schedule|trip|depart|time|vessel)\b/i.test(q)) {
     for (let routeKey of Object.keys(DB.schedules)) {
@@ -1749,6 +1841,7 @@ document.addEventListener('DOMContentLoaded', function(){
     Object.entries(updatedFares).forEach(([route, fare])=>{
       DB.paxFares[route] = Object.assign({}, DB.paxFares[route] || {}, fare);
     });
+    if (typeof applyConnectingPassengerFares === 'function') applyConnectingPassengerFares();
     try{ localStorage.setItem('off_baggage_v14', JSON.stringify(DB)); }catch(e){}
   };
   document.addEventListener('DOMContentLoaded', function(){
@@ -1769,5 +1862,6 @@ document.addEventListener('DOMContentLoaded', function(){
 })();
 </script>
 
+<!-- V101_REAL_CONNECTING_PASSENGER_FARES: generated from V100 fixed source, baggage formula preserved. -->
 </body>
 </html>
