@@ -426,7 +426,7 @@
 
 <div class="ai-float-btn" id="aiFloatBtn" onclick="toggleChat()">🤖</div>
 <div class="chat-panel" id="chatPanel">
-    <div class="chat-header"><span>🤖 Genius Assistant</span><span style="cursor:pointer" onclick="toggleChat()">✕</span></div>
+    <div class="chat-header"><span>🤖 Genius Assistant · Gemini Ready</span><span style="cursor:pointer" onclick="toggleChat()">✕</span></div>
     <div class="chat-body" id="chatBody"><div class="chat-bubble bot">Hello! I'm the Ocean Fast Ferries genius AI. Ask me anything about baggage, fares, schedules, connections, or tourist tips.</div></div>
     <div class="chat-input-wrapper">
         <button class="voice-btn" id="voiceBtn" onclick="startVoice()">🎤</button>
@@ -528,7 +528,7 @@ const DEFAULT_DB = {
   creds: { cashier:{u:'cashier',p:'cashier'}, supervisor:{u:'demo',p:'demo'} },
   history: [],
   darkMode: false,
-  aiSettings: { apiKey: '', useAI: true }
+  aiSettings: { apiKey: '', useAI: true, model: 'auto', timeoutMs: 20000, lastStatus: 'Not tested yet', lastModel: '', availableModels: [] }
 };
 
 let DB = JSON.parse(localStorage.getItem(DB_KEY)) || {};
@@ -543,7 +543,12 @@ window.DB = DB;
         }
     }
 })();
-if (!DB.aiSettings) DB.aiSettings = { apiKey: '', useAI: true };
+if (!DB.aiSettings) DB.aiSettings = { apiKey: '', useAI: true, model: 'gemini-3.5-flash', timeoutMs: 15000, lastStatus: 'Not tested yet' };
+if (!DB.aiSettings.model) DB.aiSettings.model = 'auto';
+if (!DB.aiSettings.timeoutMs) DB.aiSettings.timeoutMs = 20000;
+if (!DB.aiSettings.lastStatus) DB.aiSettings.lastStatus = 'Not tested yet';
+if (!Array.isArray(DB.aiSettings.availableModels)) DB.aiSettings.availableModels = [];
+if (!DB.aiSettings.lastModel) DB.aiSettings.lastModel = '';
 if (!DB.history) DB.history = [];
 if (DB.darkMode === undefined) DB.darkMode = false;
 
@@ -1234,22 +1239,51 @@ function showAdminView(section) {
       <p>Top Route: <b>${s.topRoute || 'N/A'}</b></p>
       <p>Avg per txn: <b>${s.transactions>0?fmtPHP(s.revenue/s.transactions):'N/A'}</b></p>`;
   } else if (section === 'settings') {
+    const modelOptions = ['auto', ...GEMINI_MODEL_OPTIONS];
     content.innerHTML = `
       <div class="card-header">⚙️ Settings</div>
       <div class="input-group" style="margin-top:8px">
-        <label>🤖 Gemini API Key <small>(free from <a href="https://aistudio.google.com/apikey" target="_blank" style="color:var(--accent)">Google AI Studio</a>)</small></label>
-        <div style="display:flex;gap:6px">
-          <input type="password" id="apiKeyInput" value="${DB.aiSettings.apiKey||''}" placeholder="Paste API key here">
+        <label>🤖 Gemini API Key <small>(from Google AI Studio)</small></label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="password" id="apiKeyInput" value="${DB.aiSettings.apiKey||''}" placeholder="Paste Gemini API key here" autocomplete="off" spellcheck="false">
           <button class="primary sm" onclick="saveApiKey()">Save</button>
           <button class="danger sm" onclick="clearApiKey()">Clear</button>
         </div>
+        <small style="display:block;margin-top:6px;color:var(--text3)">For GitHub Pages testing, the key is stored only in this browser. For production, use a backend proxy later so the key is not exposed in browser network calls.</small>
       </div>
-      <div class="input-group" style="margin-top:12px">
-        <label>Enable AI responses <small>(online required)</small></label>
+
+      <div class="grid2">
+        <div class="input-group">
+          <label>Gemini Model</label>
+          <select id="geminiModelSelect" onchange="saveGeminiModel(this.value)">
+            ${modelOptions.map(m => `<option value="${m}" ${DB.aiSettings.model===m?'selected':''}>${m === 'auto' ? 'Auto-detect best available model' : m}</option>`).join('')}
+          </select>
+        </div>
+        <div class="input-group">
+          <label>Request Timeout</label>
+          <select id="geminiTimeoutSelect" onchange="saveGeminiTimeout(this.value)">
+            ${[10000,15000,20000,30000].map(ms => `<option value="${ms}" ${Number(DB.aiSettings.timeoutMs)===ms?'selected':''}>${Math.round(ms/1000)} seconds</option>`).join('')}
+          </select>
+        </div>
+      </div>
+
+      <div class="input-group" style="margin-top:6px">
+        <label>Enable Gemini responses <small>(online required)</small></label>
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" id="useAICheck" ${DB.aiSettings.useAI?'checked':''} onchange="toggleAI(this.checked)" style="width:auto;margin:0">
-          <span>Use Gemini API when available</span>
+          <span>Use Gemini API when available; fallback to built-in assistant if unavailable</span>
         </label>
+      </div>
+
+      <div class="card" style="margin:10px 0;background:var(--bg-surface);box-shadow:none">
+        <div class="card-header">🧪 Gemini Professional Diagnostic</div>
+        <div id="geminiStatusBox" style="font-size:0.8rem;color:var(--text2);margin-bottom:8px;white-space:pre-wrap">${escapeHtml(DB.aiSettings.lastStatus || 'Not tested yet')}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="primary sm" onclick="testGeminiApi()">Test Gemini Now</button>
+          <button class="accent sm" onclick="listGeminiModelsUI()">Refresh Models</button>
+          <button class="sm" onclick="copyGeminiStatus()">Copy Status</button>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text3);margin-top:8px">If it fails, the exact API error will appear here. Common causes: invalid key, key restricted to another website, quota exceeded, model not enabled, or no internet.</div>
       </div>
       <hr style="margin:12px 0;border-color:var(--border)">
       <button class="primary block" onclick="exportDatabase()">📥 Export Backup</button>
@@ -1257,6 +1291,7 @@ function showAdminView(section) {
       <button class="block" onclick="changeCredentials()">🔑 Change Credentials</button>
       <button class="block danger" onclick="resetApp()">⚠️ Reset All Data</button>
     `;
+
   }
 }
 
@@ -1351,23 +1386,48 @@ function resetApp() {
   }
 }
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+}
+
 function saveApiKey() {
-  DB.aiSettings.apiKey = $('apiKeyInput').value.trim();
+  const input = $('apiKeyInput');
+  DB.aiSettings.apiKey = (input?.value || '').trim();
+  DB.aiSettings.lastStatus = DB.aiSettings.apiKey ? `API key saved (${maskKey(DB.aiSettings.apiKey)}). Run Test Gemini Now.` : 'No API key saved.';
   saveDB();
-  toast('API key saved');
+  updateGeminiStatus(DB.aiSettings.lastStatus, DB.aiSettings.apiKey ? 'info' : 'warn');
+  toast(DB.aiSettings.apiKey ? 'Gemini API key saved' : 'No API key entered');
 }
 
 function clearApiKey() {
   DB.aiSettings.apiKey = '';
-  $('apiKeyInput').value = '';
+  DB.aiSettings.lastStatus = 'API key removed.';
+  DB.aiSettings.availableModels = [];
+  DB.aiSettings.lastModel = '';
+  const input = $('apiKeyInput');
+  if (input) input.value = '';
   saveDB();
-  toast('API key removed');
+  updateGeminiStatus(DB.aiSettings.lastStatus, 'warn');
+  toast('Gemini API key removed');
+}
+
+function saveGeminiModel(model) {
+  DB.aiSettings.model = model || 'auto';
+  DB.aiSettings.lastStatus = `Model set to ${DB.aiSettings.model}. Run Test Gemini Now.`;
+  saveDB();
+  updateGeminiStatus(DB.aiSettings.lastStatus, 'info');
+}
+
+function saveGeminiTimeout(ms) {
+  DB.aiSettings.timeoutMs = Number(ms) || 20000;
+  saveDB();
+  updateGeminiStatus(`Timeout set to ${Math.round(DB.aiSettings.timeoutMs / 1000)} seconds.`, 'info');
 }
 
 function toggleAI(state) {
   DB.aiSettings.useAI = state;
   saveDB();
-  toast(state? 'AI enabled' : 'Using offline rules only');
+  toast(state ? 'Gemini enabled' : 'Using offline rules only');
 }
 
 function toggleChat() { $('chatPanel').classList.toggle('open'); }
@@ -1383,13 +1443,239 @@ function addChatMsg(who, text) {
 function showLoading() {
   const div = document.createElement('div');
   div.className = 'loading-dot';
-  div.innerHTML = '<span></span><span></span>';
+  div.innerHTML = '<span></span><span></span><span></span>';
   $('chatBody').appendChild(div);
   div.scrollIntoView(false);
   return div;
 }
 
 function removeLoading(div) { if (div) div.remove(); }
+
+const GEMINI_MODEL_OPTIONS = [
+  'gemini-3.5-flash',
+  'gemini-3.1-flash',
+  'gemini-3-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash'
+];
+
+function maskKey(key) {
+  if (!key) return 'none';
+  const clean = String(key).trim();
+  return clean.length <= 10 ? 'saved key' : `${clean.slice(0, 5)}…${clean.slice(-4)}`;
+}
+
+function updateGeminiStatus(message, tone = 'info') {
+  const text = String(message || '');
+  const el = $('geminiStatusBox');
+  if (el) {
+    const color = tone === 'ok' ? '#22c55e' : tone === 'warn' ? '#fb923c' : tone === 'bad' ? '#f43f5e' : 'var(--text2)';
+    el.style.color = color;
+    el.textContent = text;
+  }
+  DB.aiSettings.lastStatus = text;
+}
+
+function getGeminiEndpoint(model) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+}
+
+function getGeminiModelsEndpoint() {
+  return 'https://generativelanguage.googleapis.com/v1beta/models';
+}
+
+function normalizeGeminiModelName(name) {
+  return String(name || '').replace(/^models\//, '');
+}
+
+function buildGeminiSystemPrompt() {
+  const fareSamples = CEBU_BAGGAGE_ROUTES.map(route => {
+    const fare = getPassengerFare(route);
+    return `${DB.schedules?.[route]?.title || titleCase(route)}: Tourist ${fmtPHP(Number(fare?.['TC/OA'] || 0))}, Business ${fmtPHP(Number(fare?.['BC'] || 0))}`;
+  }).join('\n');
+  return `You are Genius Assistant for Ocean Fast Ferries / OceanJet PortDesk in Cebu, Philippines.
+Use the app data below as the source of truth. Be practical, short, and friendly.
+Baggage free allowance: Tourist 10kg per passenger, Business 20kg per passenger.
+Baggage slab rates JSON: ${JSON.stringify(DB.slabs)}
+Passenger fares with connecting-fare engine applied:\n${fareSamples}
+Connecting fare rules: Cebu to Dumaguete = Cebu to Tagbilaran + Tagbilaran to Dumaguete; Cebu to Siquijor = Cebu to Tagbilaran + Tagbilaran to Siquijor; Cebu to Surigao = Cebu to Maasin + Maasin to Surigao.
+If asked about schedules, use this schedule JSON: ${JSON.stringify(DB.schedules)}
+If computing baggage, show the route, free allowance, excess kg, rate tier summary, and total.
+Never invent schedules or fares that are not in the app data.`;
+}
+
+function geminiErrorMessage(status, payloadText) {
+  let detail = '';
+  try {
+    const parsed = JSON.parse(payloadText || '{}');
+    detail = parsed?.error?.message || payloadText || '';
+  } catch {
+    detail = payloadText || '';
+  }
+  detail = String(detail || '').trim();
+  if (status === 0) return `Gemini network error: ${detail || 'No response. Check internet, browser CORS, or key restrictions.'}`;
+  if (status === 400) return `Gemini error 400: request/model format problem. ${detail}`;
+  if (status === 401) return `Gemini error 401: API key is missing or invalid. ${detail}`;
+  if (status === 403) return `Gemini error 403: API key permission/referrer restriction problem. ${detail}`;
+  if (status === 404) return `Gemini error 404: model not found or not available for this key. ${detail}`;
+  if (status === 429) return `Gemini error 429: rate limit or quota exceeded. ${detail}`;
+  if (status === 500 || status === 503 || status === 504) return `Gemini server busy/unavailable (${status}). ${detail}`;
+  return `Gemini HTTP ${status}: ${detail || 'Unknown error'}`;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err?.name === 'AbortError') throw new Error(`Gemini request timed out after ${Math.round(timeoutMs / 1000)} seconds.`);
+    throw new Error(`Gemini network error: ${err?.message || err}`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function listGeminiModels() {
+  if (!DB.aiSettings.apiKey) throw new Error('No Gemini API key saved. Open Settings and paste your key.');
+  const res = await fetchWithTimeout(getGeminiModelsEndpoint(), {
+    method: 'GET',
+    headers: { 'x-goog-api-key': DB.aiSettings.apiKey }
+  }, Number(DB.aiSettings.timeoutMs || 20000));
+  const textBody = await res.text();
+  if (!res.ok) throw new Error(geminiErrorMessage(res.status, textBody));
+  const data = JSON.parse(textBody || '{}');
+  const models = (data.models || [])
+    .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+    .map(m => normalizeGeminiModelName(m.name))
+    .filter(Boolean);
+  DB.aiSettings.availableModels = models;
+  saveDB();
+  return models;
+}
+
+function preferredGeminiModels(availableModels = []) {
+  const preferred = DB.aiSettings.model || 'auto';
+  const available = Array.isArray(availableModels) && availableModels.length ? availableModels : DB.aiSettings.availableModels || [];
+  const configured = preferred !== 'auto' ? [preferred] : [];
+  const priority = [...configured, ...GEMINI_MODEL_OPTIONS];
+  const combined = available.length
+    ? [...priority.filter(m => available.includes(m)), ...available.filter(m => !priority.includes(m))]
+    : priority;
+  return [...new Set(combined)].filter(Boolean);
+}
+
+async function callGeminiModel(model, query, context) {
+  const recentContext = context.slice(-8).map(c => `${c.role}: ${c.content}`).join('\n');
+  const body = {
+    system_instruction: { parts: [{ text: buildGeminiSystemPrompt() }] },
+    contents: [{
+      role: 'user',
+      parts: [{ text: `Previous chat:\n${recentContext || '(none)'}\n\nUser: ${query}` }]
+    }],
+    generationConfig: { temperature: 0.35, maxOutputTokens: 700 }
+  };
+  const res = await fetchWithTimeout(getGeminiEndpoint(model), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': DB.aiSettings.apiKey },
+    body: JSON.stringify(body)
+  }, Number(DB.aiSettings.timeoutMs || 20000));
+  const textBody = await res.text();
+  if (!res.ok) throw new Error(geminiErrorMessage(res.status, textBody));
+  const data = JSON.parse(textBody || '{}');
+  const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
+  if (!text) {
+    const finish = data?.candidates?.[0]?.finishReason || 'empty response';
+    throw new Error(`Gemini returned no text (${finish}).`);
+  }
+  return { text, model };
+}
+
+async function fetchGeminiResponse(query, context) {
+  if (!DB.aiSettings.apiKey) throw new Error('No Gemini API key saved. Open Settings and paste your key.');
+  if (!navigator.onLine) throw new Error('Device is offline.');
+
+  let available = [];
+  try {
+    available = await listGeminiModels();
+  } catch (err) {
+    // Listing can fail for some restricted keys; still try direct generateContent with configured fallbacks.
+    available = [];
+  }
+
+  const models = preferredGeminiModels(available);
+  let lastError = null;
+  for (const model of models) {
+    try {
+      const result = await callGeminiModel(model, query, context);
+      DB.aiSettings.lastModel = result.model;
+      if (DB.aiSettings.model === 'auto') DB.aiSettings.model = result.model;
+      saveDB();
+      return result;
+    } catch (err) {
+      lastError = err;
+      const msg = String(err?.message || err);
+      // Continue only for model/server errors; stop for bad key, permission, quota, or request restrictions.
+      if (!/404|model not found|model|500|503|504|busy|unavailable/i.test(msg)) break;
+    }
+  }
+  throw lastError || new Error('Gemini request failed with no available model.');
+}
+
+async function testGeminiApi() {
+  saveApiKey();
+  if (!DB.aiSettings.apiKey) return;
+  const btn = document.activeElement;
+  if (btn) btn.disabled = true;
+  const diagnostics = [];
+  diagnostics.push(`Key: ${maskKey(DB.aiSettings.apiKey)}`);
+  diagnostics.push(`Page: ${location.protocol}//${location.host || 'local file'}`);
+  diagnostics.push(`Online: ${navigator.onLine ? 'yes' : 'no'}`);
+  diagnostics.push(`Selected model: ${DB.aiSettings.model || 'auto'}`);
+  updateGeminiStatus(`Testing Gemini...\n${diagnostics.join('\n')}`, 'info');
+  try {
+    const models = await listGeminiModels();
+    diagnostics.push(`Models discovered: ${models.slice(0, 8).join(', ') || 'none'}`);
+    const result = await fetchGeminiResponse('Reply with exactly: Gemini connected.', []);
+    DB.aiSettings.lastModel = result.model;
+    DB.aiSettings.lastStatus = `✅ Gemini connected using ${result.model}\n${diagnostics.join('\n')}`;
+    saveDB();
+    updateGeminiStatus(DB.aiSettings.lastStatus, 'ok');
+    toast('Gemini connected');
+  } catch (err) {
+    DB.aiSettings.lastStatus = `❌ Gemini failed\n${diagnostics.join('\n')}\nError: ${String(err?.message || err)}`;
+    saveDB();
+    updateGeminiStatus(DB.aiSettings.lastStatus, 'bad');
+    toast('Gemini test failed');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function listGeminiModelsUI() {
+  saveApiKey();
+  if (!DB.aiSettings.apiKey) return;
+  updateGeminiStatus('Refreshing Gemini model list...', 'info');
+  try {
+    const models = await listGeminiModels();
+    updateGeminiStatus(`✅ Available generateContent models:\n${models.join('\n') || '(none returned)'}`, 'ok');
+    toast('Gemini models refreshed');
+  } catch (err) {
+    updateGeminiStatus(`❌ Could not list Gemini models: ${String(err?.message || err)}`, 'bad');
+    toast('Model refresh failed');
+  }
+}
+
+function copyGeminiStatus() {
+  const status = DB.aiSettings.lastStatus || $('geminiStatusBox')?.textContent || '';
+  if (navigator.clipboard && status) {
+    navigator.clipboard.writeText(status).then(() => toast('Gemini status copied')).catch(() => toast('Copy failed'));
+  } else {
+    toast('No status to copy');
+  }
+}
 
 async function sendAIChat() {
   const q = $('chatInput').value.trim();
@@ -1398,57 +1684,45 @@ async function sendAIChat() {
   $('chatInput').value = '';
   $('sendBtn').disabled = true;
 
-  let response = '';
-  const useAPI = DB.aiSettings.useAI && DB.aiSettings.apiKey && navigator.onLine;
-
+  const useAPI = Boolean(DB.aiSettings.useAI && DB.aiSettings.apiKey && navigator.onLine);
   if (useAPI) {
     const loading = showLoading();
     try {
-      response = await fetchGeminiResponse(q, chatContext);
+      const result = await fetchGeminiResponse(q, chatContext);
       removeLoading(loading);
-      if (!response) response = aiOfflineRespond(q);
-    } catch {
+      DB.aiSettings.lastStatus = `✅ Last Gemini reply used ${result.model}`;
+      saveDB();
+      addChatMsg('bot', result.text);
+      chatContext.push({ role:'user', content:q });
+      chatContext.push({ role:'assistant', content:result.text });
+      $('sendBtn').disabled = false;
+      return;
+    } catch (err) {
       removeLoading(loading);
-      response = aiOfflineRespond(q);
+      const message = String(err?.message || err);
+      DB.aiSettings.lastStatus = `❌ ${message}`;
+      saveDB();
+      const fallback = aiOfflineRespond(q);
+      addChatMsg('bot', `Gemini did not connect.\n${message}\n\nBuilt-in answer:\n${fallback}`);
+      chatContext.push({ role:'user', content:q });
+      chatContext.push({ role:'assistant', content:fallback });
+      $('sendBtn').disabled = false;
+      return;
     }
-  } else {
-    response = aiOfflineRespond(q);
   }
 
+  const response = !DB.aiSettings.apiKey
+    ? `${aiOfflineRespond(q)}\n\nTip: Add and test your Gemini API key in Supervisor → Settings to enable live Gemini.`
+    : navigator.onLine
+      ? aiOfflineRespond(q)
+      : `You appear offline, so I used the built-in assistant.\n\n${aiOfflineRespond(q)}`;
   addChatMsg('bot', response);
   chatContext.push({ role:'user', content:q });
   chatContext.push({ role:'assistant', content:response });
   $('sendBtn').disabled = false;
 }
 
-async function fetchGeminiResponse(query, context) {
-  const apiKey = DB.aiSettings.apiKey;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-  const systemPrompt = `You are the official AI assistant for Ocean Fast Ferries (Cebu, Philippines).
-Routes: Tagbilaran, Ormoc, Palompon, Dumaguete, Surigao, Getafe, Siquijor.
-Baggage slabs: ${JSON.stringify(DB.slabs)}. Passenger fares: ${JSON.stringify(DB.paxFares)}.
-Answer in a friendly, helpful tone. Always compute baggage fees using the slab rates if asked.
-If you don't know something, say you'll connect to a human agent. Keep replies short.`;
-  const recentContext = context.slice(-6).map(c => `${c.role}: ${c.content}`).join('\n');
-  const body = {
-    contents: [{ parts: [{ text: `${systemPrompt}\n\nPrevious chat:\n${recentContext}\nUser: ${query}` }] }],
-    generationConfig: { temperature: 0.4, maxOutputTokens: 512 }
-  };
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!res.ok) throw new Error('API error');
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    return text? text.trim() : null;
-  } catch {
-    return null;
-  }
-}
+window.OJGemini = { test: testGeminiApi, listModels: listGeminiModelsUI, ask: fetchGeminiResponse };
 
 function aiOfflineRespond(q) {
   const ql = q.toLowerCase();
@@ -2155,6 +2429,482 @@ function exportMapManifest(){
   toast('Map manifest exported');
 }
 
+
+/* V107 AR Scanner Pro + Cebu Command Map Pro Upgrade
+   Scope: replaces only AR Scanner and Live Map UI/runtime functions.
+   Baggage, fares, schedules, Gemini, and PDF receipt logic remain unchanged. */
+var arV107Threshold = 0.42;
+var arV107LastFrame = null;
+var arV107LastRoute = 'cebu_tagbilaran';
+var mapV107AutoCycle = false;
+var mapV107AutoTimer = null;
+var mapV107LastFeed = [];
+
+function ensureV107OpsStyles(){
+  if(document.getElementById('v107OpsStyles')) return;
+  const style = document.createElement('style');
+  style.id = 'v107OpsStyles';
+  style.textContent = `
+    .v107-hero{position:relative;overflow:hidden;border-radius:18px;padding:14px;background:linear-gradient(135deg,rgba(56,189,248,.12),rgba(244,63,94,.11));border:1px solid rgba(56,189,248,.28);margin-bottom:12px}
+    .v107-hero:before{content:'';position:absolute;inset:0;background:radial-gradient(circle at 20% 10%,rgba(56,189,248,.25),transparent 35%),radial-gradient(circle at 80% 70%,rgba(244,63,94,.23),transparent 38%);pointer-events:none}
+    .v107-hero>*{position:relative;z-index:1}.v107-sub{font-size:.75rem;color:var(--text2);margin-top:4px}.v107-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 9px;font-size:.62rem;font-weight:800;letter-spacing:.08em;background:rgba(2,6,23,.36);border:1px solid rgba(56,189,248,.3);color:#bae6fd}
+    .v107-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.v107-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.v107-grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.v107-stack{display:flex;flex-direction:column;gap:8px}.v107-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.v107-actions button{flex:1;justify-content:center;min-width:112px}
+    .v107-kpi{background:rgba(255,255,255,.045);border:1px solid var(--border);border-radius:14px;padding:10px;text-align:center}.v107-kpi b{display:block;color:var(--accent);font-size:1.15rem;line-height:1.1}.v107-kpi span{font-size:.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+    .v107-panel{background:rgba(2,6,23,.22);border:1px solid var(--border);border-radius:16px;padding:12px}.v107-panel-title{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:800;margin-bottom:8px}.v107-muted{color:var(--text3);font-size:.72rem}.v107-list{display:flex;flex-direction:column;gap:8px}.v107-row{border:1px solid var(--border);border-left:4px solid var(--accent);border-radius:14px;padding:10px;background:linear-gradient(145deg,rgba(255,255,255,.045),rgba(255,255,255,.015));font-size:.8rem}.v107-row strong{color:var(--accent)}
+    .v107-meter{height:7px;background:rgba(255,255,255,.09);border-radius:999px;overflow:hidden;margin-top:7px}.v107-meter span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),#38bdf8)}
+    .v107-ar-shell{position:relative;border-radius:18px;overflow:hidden;min-height:310px;background:#020617;border:1px solid rgba(56,189,248,.28);box-shadow:0 0 30px rgba(56,189,248,.12)}.v107-ar-shell:before{content:'';position:absolute;inset:0;background:linear-gradient(transparent 49%,rgba(56,189,248,.14) 50%,transparent 51%);background-size:100% 22px;z-index:4;pointer-events:none;opacity:.35}.v107-ar-shell:after{content:'';position:absolute;left:0;right:0;top:0;height:3px;background:linear-gradient(90deg,transparent,#38bdf8,transparent);z-index:5;animation:v107ScanLine 2.4s ease-in-out infinite}
+    .v107-ar-video{width:100%;min-height:310px;object-fit:cover;display:block;background:#020617}.v107-ar-overlay{position:absolute;inset:0;pointer-events:none;z-index:6}.v107-ar-box{position:absolute;border:2px solid #38bdf8;border-radius:12px;box-shadow:0 0 22px rgba(56,189,248,.65),inset 0 0 18px rgba(56,189,248,.14)}.v107-ar-label{position:absolute;top:-28px;left:0;white-space:nowrap;background:linear-gradient(135deg,#0ea5e9,#f43f5e);color:white;font-size:.68rem;font-weight:800;padding:4px 7px;border-radius:999px;box-shadow:0 8px 18px rgba(0,0,0,.35)}
+    .v107-range{display:flex;align-items:center;gap:8px;font-size:.72rem;color:var(--text2)}.v107-range input{padding:0;accent-color:#38bdf8}.v107-badge{display:inline-flex;align-items:center;border-radius:999px;padding:4px 8px;background:rgba(255,255,255,.06);border:1px solid var(--border);font-size:.62rem;font-weight:800;letter-spacing:.07em}.v107-good{color:#22c55e}.v107-warn{color:#f59e0b}.v107-danger{color:#ef4444}
+    .v107-map-shell{position:relative;border-radius:20px;overflow:hidden;background:#020617;border:1px solid rgba(56,189,248,.36);box-shadow:0 0 35px rgba(56,189,248,.16), inset 0 0 45px rgba(56,189,248,.04)}.v107-map-shell:before{content:'';position:absolute;inset:0;background:linear-gradient(rgba(56,189,248,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,.09) 1px,transparent 1px);background-size:30px 30px;z-index:450;pointer-events:none;mix-blend-mode:screen;opacity:.42}.v107-map-shell:after{content:'LIVE CEBU COMMAND';position:absolute;top:10px;right:10px;z-index:460;background:rgba(2,6,23,.72);border:1px solid rgba(56,189,248,.35);border-radius:999px;padding:5px 9px;color:#bae6fd;font-size:.62rem;font-weight:900;letter-spacing:.13em;backdrop-filter:blur(8px)}
+    #liveMap{height:460px;border-radius:20px;overflow:hidden}.v107-map-controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.v107-map-controls input,.v107-map-controls select{font-size:.78rem;padding:9px 10px}.v107-map-board{display:grid;grid-template-columns:1fr;gap:8px;max-height:380px;overflow:auto;margin-top:12px;padding-right:2px}.v107-vessel-row{border-left-color:var(--accent);cursor:pointer}.v107-vessel-row:hover,.v107-vessel-row.active{border-color:rgba(56,189,248,.55);box-shadow:0 0 18px rgba(56,189,248,.15);transform:translateY(-1px)}.v107-row-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.v107-status{font-size:.58rem;font-weight:900;letter-spacing:.08em;border-radius:999px;padding:4px 7px;border:1px solid var(--border);background:rgba(255,255,255,.06)}.v107-status.boarding{color:#22c55e;border-color:rgba(34,197,94,.5)}.v107-status.soon{color:#f59e0b;border-color:rgba(245,158,11,.5)}.v107-status.active{color:#38bdf8;border-color:rgba(56,189,248,.5)}.v107-status.later{color:#94a3b8}.v107-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.v107-legend span{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:6px 8px;background:var(--bg-surface);border:1px solid var(--border);font-size:.7rem;color:var(--text2)}.v107-legend i{width:9px;height:9px;border-radius:50%;display:inline-block;background:#38bdf8}.v107-timeline{display:flex;gap:6px;overflow:auto;padding-bottom:2px}.v107-timechip{min-width:86px;text-align:center;border-radius:12px;padding:8px;border:1px solid var(--border);background:rgba(255,255,255,.04);font-size:.7rem}.v107-timechip b{display:block;color:var(--accent)}
+    .v107-pulse-marker{width:20px;height:20px;border-radius:50%;border:2px solid white;background:currentColor;box-shadow:0 0 0 4px rgba(56,189,248,.18),0 0 25px currentColor;position:relative}.v107-pulse-marker:after{content:'';position:absolute;inset:-8px;border:1px solid currentColor;border-radius:50%;animation:v107Pulse 1.9s ease-out infinite}.v107-port-marker{width:23px;height:23px;border-radius:8px;border:2px solid white;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;box-shadow:0 0 22px rgba(56,189,248,.5)}.v107-popup{font-size:.78rem;line-height:1.45}.v107-popup b{color:#0284c7}.v107-popup .tag{display:inline-block;margin-top:4px;border-radius:999px;padding:2px 6px;background:#e0f2fe;color:#075985;font-weight:900;font-size:.62rem}
+    @keyframes v107ScanLine{0%{top:0;opacity:.35}50%{top:100%;opacity:1}100%{top:0;opacity:.35}}@keyframes v107Pulse{from{transform:scale(.65);opacity:.85}to{transform:scale(2.5);opacity:0}}
+    @media(max-width:430px){.v107-grid4{grid-template-columns:repeat(2,1fr)}.v107-grid3,.v107-grid2,.v107-map-controls{grid-template-columns:1fr}.v107-actions button{min-width:100%}#liveMap{height:380px}.v107-ar-video,.v107-ar-shell{min-height:280px}}
+  `;
+  document.head.appendChild(style);
+}
+
+function v107CebuRouteOptions(selected){
+  const preferred = ['cebu_tagbilaran','cebu_getafe','cebu_ormoc','cebu_palompon','cebu_maasin','cebu_dumaguete','cebu_surigao','cebu_siquijor'];
+  const keys = preferred.filter(k=>DB?.slabs?.[k]);
+  return keys.map(k=>`<option value="${k}" ${selected===k?'selected':''}>${escapeHtml(routeLabel(k))}</option>`).join('');
+}
+
+function v107RiskClass(kg, count){
+  if(kg >= 80 || count >= 5) return {label:'HEAVY LOAD', cls:'v107-danger'};
+  if(kg >= 45 || count >= 3) return {label:'REVIEW', cls:'v107-warn'};
+  return {label:'NORMAL', cls:'v107-good'};
+}
+
+function buildAR(){
+  ensureOpsStyles();
+  ensureV107OpsStyles();
+  arV107LastRoute = arV107LastRoute || 'cebu_tagbilaran';
+  $('view-ar').innerHTML = `
+    <div class="card glow">
+      <div class="v107-hero">
+        <div class="card-header" style="justify-content:space-between;margin-bottom:4px">
+          <span>🧠 AR Baggage Scanner Pro</span>
+          <span id="arModeBadge" class="v107-pill">READY</span>
+        </div>
+        <div class="v107-sub">Camera AI scanner with estimated load, confidence threshold, route context, and calculator handoff.</div>
+      </div>
+      <div class="v107-grid2">
+        <div class="input-group"><label>Route Context</label><select id="arRouteContext">${v107CebuRouteOptions(arV107LastRoute)}</select></div>
+        <div class="input-group"><label>Passenger Class</label><select id="arClassContext"><option value="tourist">Tourist 10kg</option><option value="business">Business 20kg</option></select></div>
+      </div>
+      <div class="v107-grid2">
+        <div class="input-group"><label>Passengers</label><input type="number" id="arPaxContext" min="1" value="1"></div>
+        <div class="input-group"><label>Detection Sensitivity</label><div class="v107-range"><input type="range" min="25" max="80" value="${Math.round(arV107Threshold*100)}" id="arThreshold" oninput="setARThreshold(this.value)"><span id="arThresholdText">${Math.round(arV107Threshold*100)}%</span></div></div>
+      </div>
+      <div class="v107-ar-shell">
+        <video id="arVideo" class="v107-ar-video" autoplay playsinline muted></video>
+        <div id="arOverlay" class="v107-ar-overlay"></div>
+      </div>
+      <div class="v107-actions">
+        <button class="primary sm" onclick="startAR()">▶ Start AI Scan</button>
+        <button class="sm" onclick="toggleARTorch()">🔦 Torch</button>
+        <button class="sm" onclick="captureARSnapshot()">⬇ Report</button>
+        <button class="sm" onclick="downloadARImage()">🖼 Image</button>
+        <button class="danger sm" onclick="stopAR()">■ Stop</button>
+      </div>
+      <div class="v107-grid4" style="margin-top:10px">
+        <div class="v107-kpi"><b id="arCount">0</b><span>Items</span></div>
+        <div class="v107-kpi"><b id="arWeight">0kg</b><span>Visual Load</span></div>
+        <div class="v107-kpi"><b id="arConfidence">--</b><span>Confidence</span></div>
+        <div class="v107-kpi"><b id="arRisk">--</b><span>Risk</span></div>
+      </div>
+      <div id="arStatus" class="v107-panel v107-muted" style="margin-top:10px">Open this GitHub Pages site directly on a phone browser, allow camera access, then scan baggage. Detection is an estimate only.</div>
+      <div class="v107-actions"><button class="accent sm block" onclick="applyARWeightToCalculator()">➕ Send Estimated Weight to Calculator</button></div>
+      <div id="arScanList" class="v107-list" style="margin-top:10px"></div>
+    </div>
+  `;
+}
+
+function setARThreshold(value){
+  arV107Threshold = Math.max(.25, Math.min(.8, Number(value)/100 || .42));
+  const t = $('arThresholdText');
+  if(t) t.textContent = `${Math.round(arV107Threshold*100)}%`;
+}
+
+async function startAR(){
+  ensureV107OpsStyles();
+  const status = $('arStatus');
+  const badge = $('arModeBadge');
+  try{
+    arV107LastRoute = $('arRouteContext')?.value || arV107LastRoute || 'cebu_tagbilaran';
+    stopAR(false);
+    arDetectedItems = [];
+    if(status) status.textContent = 'Requesting camera permission...';
+    if(badge) badge.textContent = 'CAMERA';
+    if(!navigator.mediaDevices?.getUserMedia) throw new Error('Camera API is not available on this browser. Use HTTPS/GitHub Pages on mobile Chrome/Safari.');
+    arStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}}, audio:false});
+    const video = $('arVideo');
+    video.srcObject = arStream;
+    await video.play();
+    if(!window.cocoSsd) throw new Error('AI model library is not loaded yet. Check internet connection and refresh.');
+    if(!arModel){
+      if(status) status.textContent = 'Loading lightweight baggage detection model...';
+      if(badge) badge.textContent = 'AI LOAD';
+      arModel = await cocoSsd.load({base:'lite_mobilenet_v2'});
+    }
+    arRunning = true;
+    arLastScan = 0;
+    if(badge) badge.textContent = 'SCANNING';
+    if(status) status.textContent = 'Scanning live video. Separate bags and keep the camera steady for better confidence.';
+    toast('AR Scanner Pro active');
+    arLoop();
+  }catch(e){
+    console.error(e);
+    if(status) status.textContent = e.message || 'Camera or AI scanner failed. Allow permission and try again.';
+    if(badge) badge.textContent = 'ERROR';
+    toast('AR scanner could not start');
+  }
+}
+
+function stopAR(showToast = true){
+  arRunning = false;
+  if(arAnimationFrame) cancelAnimationFrame(arAnimationFrame);
+  arAnimationFrame = null;
+  if(arStream){
+    arStream.getTracks().forEach(track=>track.stop());
+    arStream = null;
+  }
+  const video = $('arVideo');
+  if(video) video.srcObject = null;
+  const overlay = $('arOverlay');
+  if(overlay) overlay.innerHTML = '';
+  const badge = $('arModeBadge');
+  if(badge) badge.textContent = 'READY';
+  if(showToast) toast('AR scanner stopped');
+}
+
+async function toggleARTorch(){
+  try{
+    const track = arStream?.getVideoTracks?.()[0];
+    const caps = track?.getCapabilities?.();
+    if(!track || !caps || !caps.torch){ toast('Torch not supported on this device'); return; }
+    const current = track.getSettings?.().torch === true;
+    await track.applyConstraints({advanced:[{torch:!current}]});
+    toast(!current ? 'Torch on' : 'Torch off');
+  }catch(e){ console.error(e); toast('Torch control failed'); }
+}
+
+function estimateBaggageKg(prediction, videoWidth, videoHeight){
+  const [, , width, height] = prediction.bbox;
+  const frameArea = Math.max(1, videoWidth * videoHeight);
+  const ratio = (width * height) / frameArea;
+  const base = prediction.class === 'suitcase' ? 30 : prediction.class === 'backpack' ? 12 : 7;
+  const kg = base + ratio * 110;
+  return Math.max(2, Math.round(kg));
+}
+
+function renderARDetections(predictions, video){
+  const overlay = $('arOverlay');
+  const list = $('arScanList');
+  if(!overlay || !list) return;
+  overlay.innerHTML = '';
+  const rect = video.getBoundingClientRect();
+  const scaleX = rect.width / Math.max(1, video.videoWidth);
+  const scaleY = rect.height / Math.max(1, video.videoHeight);
+  arDetectedItems = predictions.map((p,index)=>{
+    const [x,y,w,h] = p.bbox;
+    const kg = estimateBaggageKg(p, video.videoWidth, video.videoHeight);
+    const confidence = Math.round((p.score || 0) * 100);
+    const box = document.createElement('div');
+    box.className = 'v107-ar-box';
+    box.style.left = `${x * scaleX}px`;
+    box.style.top = `${y * scaleY}px`;
+    box.style.width = `${w * scaleX}px`;
+    box.style.height = `${h * scaleY}px`;
+    const label = document.createElement('div');
+    label.className = 'v107-ar-label';
+    label.textContent = `${p.class} • ${kg}kg • ${confidence}%`;
+    box.appendChild(label);
+    overlay.appendChild(box);
+    return {label:p.class, kg, confidence, index:index+1, bbox:p.bbox};
+  });
+  arV107LastFrame = {items:arDetectedItems.slice(), at:new Date().toISOString(), route:$('arRouteContext')?.value || arV107LastRoute};
+  const totalKg = arDetectedItems.reduce((sum,item)=>sum+item.kg,0);
+  const avg = arDetectedItems.length ? Math.round(arDetectedItems.reduce((sum,item)=>sum+item.confidence,0)/arDetectedItems.length) : 0;
+  const risk = v107RiskClass(totalKg, arDetectedItems.length);
+  if($('arCount')) $('arCount').textContent = arDetectedItems.length;
+  if($('arWeight')) $('arWeight').textContent = `${totalKg}kg`;
+  if($('arConfidence')) $('arConfidence').textContent = arDetectedItems.length ? `${avg}%` : '--';
+  if($('arRisk')) { $('arRisk').textContent = arDetectedItems.length ? risk.label : '--'; $('arRisk').className = risk.cls; }
+  list.innerHTML = arDetectedItems.length ? arDetectedItems.map(item=>`
+    <div class="v107-row">
+      <strong>#${item.index} ${escapeHtml(item.label).toUpperCase()}</strong> • estimated ${item.kg}kg • ${item.confidence}% confidence
+      <div class="v107-meter"><span style="width:${Math.min(100,item.confidence)}%"></span></div>
+    </div>`).join('') : '<div class="v107-row" style="color:var(--text3)">No baggage object detected yet.</div>';
+  if($('arStatus')) $('arStatus').textContent = arDetectedItems.length ? `Detected ${arDetectedItems.length} item(s). Estimated visual load ${totalKg}kg. Use scale weight for final cashier computation.` : 'Scanning... point camera at suitcase/backpack/handbag.';
+}
+
+async function arLoop(timestamp = 0){
+  if(!arRunning) return;
+  const video = $('arVideo');
+  if(video && video.readyState >= 2 && arModel && (!arLastScan || timestamp - arLastScan > 360)){
+    arLastScan = timestamp;
+    try{
+      const all = await arModel.detect(video);
+      const baggage = all.filter(p=>['suitcase','backpack','handbag'].includes(p.class) && p.score >= arV107Threshold).sort((a,b)=>b.score-a.score).slice(0,10);
+      renderARDetections(baggage, video);
+    }catch(e){
+      console.error(e);
+      if($('arStatus')) $('arStatus').textContent = 'AI scanner returned an error. Stop and start again if detection freezes.';
+    }
+  }
+  arAnimationFrame = requestAnimationFrame(arLoop);
+}
+
+function captureARSnapshot(){
+  const route = $('arRouteContext')?.value || arV107LastRoute || 'cebu_tagbilaran';
+  const cls = $('arClassContext')?.value || 'tourist';
+  const pax = parseInt($('arPaxContext')?.value || '1',10) || 1;
+  const totalKg = arDetectedItems.reduce((sum,item)=>sum+item.kg,0);
+  const free = (DB?.freeAllowance?.[cls] || 0) * pax;
+  const excess = Math.max(0, totalKg - free);
+  const rows = arDetectedItems.map(item=>`#${item.index} ${item.label} ${item.kg}kg (${item.confidence}%)`).join('\n') || 'No detected items.';
+  const text = `OceanJet PortDesk AR Scanner Pro\n${new Date().toLocaleString()}\nRoute: ${routeLabel(route)}\nClass: ${cls}\nPax: ${pax}\nEstimated visual load: ${totalKg}kg\nFree allowance estimate: ${free}kg\nEstimated excess: ${excess}kg\n\nDetected Items:\n${rows}\n\nNote: AR load is visual estimate only. Use actual scale weight for final baggage receipt.`;
+  const blob = new Blob([text],{type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ar_scanner_pro_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.txt`;
+  a.click();
+  toast('AR report exported');
+}
+
+function downloadARImage(){
+  const video = $('arVideo');
+  if(!video || video.readyState < 2){ toast('Start camera before image export'); return; }
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth || 1280;
+  canvas.height = video.videoHeight || 720;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);
+  ctx.lineWidth = Math.max(4, canvas.width/250);
+  ctx.font = `${Math.max(22, canvas.width/42)}px Arial`;
+  arDetectedItems.forEach(item=>{
+    const [x,y,w,h] = item.bbox || [0,0,0,0];
+    ctx.strokeStyle = '#38bdf8'; ctx.fillStyle = 'rgba(14,165,233,.92)';
+    ctx.strokeRect(x,y,w,h);
+    const label = `#${item.index} ${item.label} ${item.kg}kg ${item.confidence}%`;
+    const tw = ctx.measureText(label).width + 20;
+    ctx.fillRect(x, Math.max(0,y-34), tw, 30);
+    ctx.fillStyle = '#fff'; ctx.fillText(label, x+10, Math.max(24,y-10));
+  });
+  const a = document.createElement('a');
+  a.href = canvas.toDataURL('image/png');
+  a.download = `ar_scanner_image_${new Date().toISOString().slice(0,19).replace(/:/g,'-')}.png`;
+  a.click();
+  toast('AR image exported');
+}
+
+function applyARWeightToCalculator(){
+  const route = $('arRouteContext')?.value || arV107LastRoute || 'cebu_tagbilaran';
+  const cls = $('arClassContext')?.value || 'tourist';
+  const pax = parseInt($('arPaxContext')?.value || '1',10) || 1;
+  const totalKg = arDetectedItems.reduce((sum,item)=>sum+item.kg,0);
+  if(totalKg <= 0){ toast('No estimated weight to send'); return; }
+  navigate('calculator');
+  setTimeout(()=>{
+    if($('calcRoute')) $('calcRoute').value = route;
+    if($('calcClass')) $('calcClass').value = cls;
+    if($('pax')) $('pax').value = pax;
+    if($('weight')) $('weight').value = totalKg;
+    toast(`AR estimate sent: ${routeLabel(route)} • ${totalKg}kg`);
+  },120);
+}
+
+function v107MapSummary(feed){
+  const all = buildCebuVesselFeed();
+  return {visible:feed.length,total:all.length,boarding:all.filter(v=>v.status==='boarding').length,active:all.filter(v=>v.status==='active').length,soon:all.filter(v=>v.status==='soon').length,next:all[0]?.dep || '--'};
+}
+
+function buildMap(){
+  ensureOpsStyles();
+  ensureFuturisticMapStyles();
+  ensureV107OpsStyles();
+  const feed = buildCebuVesselFeed();
+  mapV107LastFeed = feed;
+  const summary = v107MapSummary(feed);
+  const routeOptions = getCebuDestinations().map(dest=>`<option value="${dest}" ${mapSelectedRoute===dest?'selected':''}>${escapeHtml(PORT_LABELS[dest] || dest)}</option>`).join('');
+  const timeline = feed.slice(0,8).map(v=>`<div class="v107-timechip" onclick="selectVessel('${v.key}')"><b>${escapeHtml(v.dep)}</b>${escapeHtml(v.vessel)}<br><span class="v107-muted">${escapeHtml(PORT_LABELS[v.destination] || v.destination)}</span></div>`).join('') || '<div class="v107-muted">No timeline for selected filter.</div>';
+  $('view-map').innerHTML = `
+    <div class="card glow">
+      <div class="v107-hero">
+        <div class="card-header" style="justify-content:space-between;margin-bottom:4px">
+          <span>🛰️ Cebu Command Map Pro</span>
+          <span class="v107-pill">V107 LIVE OPS</span>
+        </div>
+        <div class="v107-sub">Schedule-powered vessel intelligence with filters, radar map, ETA board, route manifest export, and auto-cycle mode.</div>
+      </div>
+      <div class="v107-grid4">
+        <div class="v107-kpi"><b>${summary.visible}</b><span>Visible</span></div>
+        <div class="v107-kpi"><b>${summary.boarding}</b><span>Boarding</span></div>
+        <div class="v107-kpi"><b>${summary.active}</b><span>En Route</span></div>
+        <div class="v107-kpi"><b>${summary.next}</b><span>Next</span></div>
+      </div>
+      <div class="v107-map-controls">
+        <select id="mapRouteFilter" onchange="setMapRouteFilter(this.value)"><option value="all">All Cebu Routes</option>${routeOptions}</select>
+        <select id="mapStatusFilter" onchange="setMapStatusFilter(this.value)">
+          <option value="all" ${mapSelectedStatus==='all'?'selected':''}>All Status</option>
+          <option value="boarding" ${mapSelectedStatus==='boarding'?'selected':''}>Boarding</option>
+          <option value="soon" ${mapSelectedStatus==='soon'?'selected':''}>Departing Soon</option>
+          <option value="active" ${mapSelectedStatus==='active'?'selected':''}>En Route</option>
+          <option value="later" ${mapSelectedStatus==='later'?'selected':''}>Scheduled Later</option>
+        </select>
+        <input id="mapSearch" value="${escapeHtml(mapSearchTerm)}" oninput="setMapSearch(this.value)" placeholder="Search vessel, route, departure...">
+        <button class="sm" onclick="resetMapFilters()">Clear Filters</button>
+      </div>
+      <div class="v107-panel"><div class="v107-panel-title">⏱ Next Cebu Timeline <span class="v107-muted">tap to focus</span></div><div class="v107-timeline">${timeline}</div></div>
+      <div class="v107-map-shell" style="margin-top:10px"><div id="liveMap"></div></div>
+      <div class="v107-legend"><span><i style="background:#22c55e"></i>Boarding</span><span><i style="background:#f59e0b"></i>Soon</span><span><i style="background:#38bdf8"></i>En Route</span><span><i style="background:#94a3b8"></i>Scheduled</span></div>
+      <div class="v107-actions">
+        <button class="primary sm" onclick="refreshLiveMap()">↻ Refresh</button>
+        <button class="sm" onclick="focusNextVessel()">⚓ Focus Next</button>
+        <button class="sm" onclick="toggleMapAutoCycle()" id="mapAutoCycleBtn">${mapV107AutoCycle?'⏸ Stop Auto':'▶ Auto Cycle'}</button>
+        <button class="sm" onclick="centerMapCebu()">◎ Center Cebu</button>
+        <button class="sm" onclick="exportMapManifest()">⬇ Export</button>
+      </div>
+      <div id="v104VesselDetails" class="v107-panel v107-muted" style="margin-top:10px">Select a vessel row or marker to view route intelligence.</div>
+      <div id="vesselStatusList" class="v107-map-board">${feed.length ? feed.slice(0,14).map(v=>renderVesselRow(v)).join('') : '<div class="v107-row">No Cebu vessel schedule available for the selected filters.</div>'}</div>
+      <div class="v107-muted" style="margin-top:10px">Map positions are simulated from schedule rows. Connect a real GPS endpoint later for actual vessel tracking.</div>
+    </div>
+  `;
+  setTimeout(initMap,120);
+}
+
+function renderVesselRow(v){
+  return `<div class="v107-row v107-vessel-row ${mapFocusedVesselKey===v.key?'active':''}" data-key="${v.key}" onclick="selectVessel('${v.key}')" style="border-left-color:${v.color}">
+    <div class="v107-row-head"><strong>${escapeHtml(v.vessel)}</strong><span class="v107-status ${v.status}">${statusLabel(v.status)}</span></div>
+    <div>${escapeHtml(v.title)} • ${escapeHtml(v.dep)} → ${escapeHtml(v.arr || v.etaText)}</div>
+    <div class="v107-muted">${statusEta(v)}${v.remarks ? ' • ' + escapeHtml(v.remarks) : ''}</div>
+    <div class="v107-meter"><span style="width:${Math.round(v.progress)}%;background:linear-gradient(90deg,${v.color},#38bdf8)"></span></div>
+  </div>`;
+}
+
+function makeVesselIcon(v){
+  const color = v.status === 'boarding' ? '#22c55e' : v.status === 'soon' ? '#f59e0b' : v.status === 'active' ? '#38bdf8' : '#94a3b8';
+  return L.divIcon({className:'', html:`<div class="v107-pulse-marker" style="color:${color}"></div>`, iconSize:[26,26], iconAnchor:[13,13], popupAnchor:[0,-12]});
+}
+
+function makePortIcon(){
+  return L.divIcon({className:'', html:'<div class="v107-port-marker">⚓</div>', iconSize:[26,26], iconAnchor:[13,13], popupAnchor:[0,-12]});
+}
+
+function initMap(){
+  ensureV107OpsStyles();
+  const feed = buildCebuVesselFeed();
+  mapV107LastFeed = feed;
+  if(!window.L){
+    const el = $('liveMap');
+    if(el) el.innerHTML = '<div style="padding:18px;color:var(--text2)">Map library unavailable. Vessel board remains available.</div>';
+    return;
+  }
+  if(map){ try{ map.remove(); }catch(e){} map = null; }
+  if(mapLiveTimer){ clearInterval(mapLiveTimer); mapLiveTimer = null; }
+  map = L.map('liveMap',{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([10.2929,123.9053],8);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+  vesselRoutesLayer = L.layerGroup().addTo(map);
+  vesselMarkers = [];
+  const bounds = [];
+  const portSeen = new Set();
+  feed.forEach(v=>{
+    [v.from,v.to].forEach(port=>{
+      if(portSeen.has(port)) return;
+      const coord = PORT_COORDS[port];
+      if(!coord) return;
+      portSeen.add(port);
+      L.marker(coord,{icon:makePortIcon()}).addTo(vesselRoutesLayer).bindPopup(`<div class="v107-popup"><b>${escapeHtml(PORT_LABELS[port] || port)}</b><br>Port Node</div>`);
+      bounds.push(coord);
+    });
+    L.polyline([v.fromCoord,v.toCoord],{color:v.color,weight:v.status==='active'?5:3,opacity:v.status==='later'?.38:.76,dashArray:v.status==='active'?null:'10,10'}).addTo(vesselRoutesLayer);
+    const marker = L.marker([v.lat,v.lng],{icon:makeVesselIcon(v)}).addTo(vesselRoutesLayer);
+    marker.bindPopup(`<div class="v107-popup"><b>${escapeHtml(v.vessel)}</b><br>${escapeHtml(v.title)}<br>Departure: ${escapeHtml(v.dep)}<br>Arrival/ETA: ${escapeHtml(v.arr || v.etaText)}<br><span class="tag">${statusLabel(v.status)}</span></div>`);
+    marker.bindTooltip(`${escapeHtml(v.vessel)} • ${statusLabel(v.status)}`,{direction:'top'});
+    marker.on('click',()=>selectVessel(v.key,false));
+    vesselMarkers.push({marker,data:v});
+    bounds.push([v.lat,v.lng],v.fromCoord,v.toCoord);
+  });
+  if(bounds.length){ map.fitBounds(bounds,{padding:[30,30]}); }
+  setTimeout(()=>{ try{ map.invalidateSize(); }catch(e){} },250);
+  mapLiveTimer = setInterval(updateLiveMapPositions,3800);
+}
+
+function refreshLiveMap(showToast = true){
+  const feed = buildCebuVesselFeed();
+  mapV107LastFeed = feed;
+  const list = $('vesselStatusList');
+  if(list) list.innerHTML = feed.length ? feed.slice(0,14).map(v=>renderVesselRow(v)).join('') : '<div class="v107-row">No Cebu vessel schedule available for the selected filters.</div>';
+  const details = $('v104VesselDetails');
+  if(details && mapFocusedVesselKey){
+    const selected = feed.find(v=>v.key===mapFocusedVesselKey);
+    details.innerHTML = selected ? renderVesselDetails(selected) : 'Selected vessel is hidden by current filters.';
+  }
+  initMap();
+  if(showToast) toast('Cebu Command Map Pro refreshed');
+}
+
+function renderVesselDetails(v){
+  const nextAction = v.status === 'boarding' ? 'Prepare boarding lane and cashier verification.' : v.status === 'soon' ? 'Monitor gate readiness and passenger queue.' : v.status === 'active' ? 'Track arrival window and receiving port status.' : 'Scheduled. Keep route manifest ready.';
+  return `<strong style="color:var(--accent)">${escapeHtml(v.vessel)}</strong><br>
+    ${escapeHtml(v.title)}<br>
+    Status: <b>${statusLabel(v.status)}</b> • ${statusEta(v)}<br>
+    Route: ${escapeHtml(PORT_LABELS[v.from] || v.from)} → ${escapeHtml(PORT_LABELS[v.to] || v.to)} • Travel window ${v.travelMinutes} min • Progress ${Math.round(v.progress)}%<br>
+    Action: ${escapeHtml(nextAction)}<br>
+    ${v.remarks ? 'Note: '+escapeHtml(v.remarks) : 'No route note.'}`;
+}
+
+function centerMapCebu(){
+  if(map){ map.setView([10.2929,123.9053],9,{animate:true}); toast('Centered on Cebu Pier'); }
+}
+
+function toggleMapAutoCycle(){
+  mapV107AutoCycle = !mapV107AutoCycle;
+  const btn = $('mapAutoCycleBtn');
+  if(btn) btn.textContent = mapV107AutoCycle ? '⏸ Stop Auto' : '▶ Auto Cycle';
+  if(mapV107AutoTimer){ clearInterval(mapV107AutoTimer); mapV107AutoTimer = null; }
+  if(mapV107AutoCycle){
+    let i = 0;
+    mapV107AutoTimer = setInterval(()=>{
+      if(!vesselMarkers.length) return;
+      const entry = vesselMarkers[i % vesselMarkers.length];
+      selectVessel(entry.data.key,true);
+      i++;
+    },4500);
+    toast('Auto cycle started');
+  } else {
+    toast('Auto cycle stopped');
+  }
+}
+
+function updateLiveMapPositions(){
+  if(!vesselMarkers.length) return;
+  vesselMarkers.forEach(entry=>{
+    const v = entry.data;
+    const latLng = entry.marker.getLatLng();
+    const nudge = v.status === 'active' ? .045 : v.status === 'soon' ? .02 : .01;
+    const lat = latLng.lat + (v.toCoord[0] - latLng.lat) * nudge + (Math.random()-.5)*.003;
+    const lng = latLng.lng + (v.toCoord[1] - latLng.lng) * nudge + (Math.random()-.5)*.003;
+    entry.marker.setLatLng([lat,lng]);
+  });
+}
+
+function exportMapManifest(){
+  const feed = buildCebuVesselFeed();
+  if(!feed.length){ toast('No vessel rows to export'); return; }
+  const rows = [['Vessel','Route','Departure','Arrival/ETA','Status','Progress','From','To','Remarks']];
+  feed.forEach(v=>rows.push([v.vessel,v.title,v.dep,v.arr || v.etaText,statusLabel(v.status),`${Math.round(v.progress)}%`,PORT_LABELS[v.from] || v.from,PORT_LABELS[v.to] || v.to,v.remarks]));
+  const csv = rows.map(r=>r.map(cell=>`"${String(cell ?? '').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv],{type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `cebu_command_map_v107_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  toast('Cebu map manifest exported');
+}
+
 setInterval(()=>{ const c = $('clock'); if(c) c.textContent = new Date().toLocaleTimeString('en-PH',{hour12:true,hour:'2-digit',minute:'2-digit'}); },1000);
 applyTheme();
 $('loginOverlay').style.display = 'none';
@@ -2457,6 +3207,491 @@ document.addEventListener('DOMContentLoaded', function(){
 });
 </script>
 
+
+
+<script>
+/* V108 AR Scanner Elite + Cebu Command Map Elite
+   Scope: overrides only AR scanner and Live Map functions from V107.
+   All baggage, fares, schedules, Gemini, PDF receipt, and connecting fare logic are preserved. */
+(function(){
+  'use strict';
+  var v108 = window.OJ_V108_AR_MAP = window.OJ_V108_AR_MAP || {
+    threshold: 0.40,
+    scanInterval: 360,
+    lastScan: 0,
+    lastFrameDataUrl: '',
+    lastItems: [],
+    selectedRoute: 'all',
+    selectedStatus: 'all',
+    search: '',
+    autoFocus: false,
+    autoFocusIndex: 0,
+    autoFocusTimer: null,
+    mapTickTimer: null,
+    feed: [],
+    markers: []
+  };
+
+  function el(id){ return document.getElementById(id); }
+  function notify(msg){ if(typeof toast === 'function') toast(msg); else console.log(msg); }
+  function phNow(){ return new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Manila'})); }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]); }); }
+  function routeName(key){
+    if(typeof DB !== 'undefined' && DB.schedules && DB.schedules[key] && DB.schedules[key].title) return DB.schedules[key].title;
+    return String(key || '').replace(/_/g,' → ').replace(/\b\w/g, function(m){return m.toUpperCase();});
+  }
+  function routeKeys(){
+    if(typeof DB === 'undefined' || !DB.schedules) return [];
+    var preferred = ['cebu_tagbilaran','cebu_getafe','cebu_ormoc','cebu_palompon','cebu_maasin','cebu_dumaguete','cebu_surigao','cebu_siquijor','tagbilaran_cebu','getafe_cebu','ormoc_cebu','palompon_cebu','maasin_cebu'];
+    var keys = Object.keys(DB.schedules).filter(function(k){
+      var title = routeName(k).toLowerCase();
+      return k.indexOf('cebu') >= 0 || title.indexOf('cebu') >= 0;
+    });
+    return preferred.filter(function(k){return keys.indexOf(k)>=0;}).concat(keys.filter(function(k){return preferred.indexOf(k)<0;}));
+  }
+  function destinationLabel(key){
+    var parts = String(key||'').split('_');
+    if(parts[0] === 'cebu' && parts[1]) return parts[1].toUpperCase();
+    if(parts[1] === 'cebu' && parts[0]) return parts[0].toUpperCase() + ' → CEBU';
+    return routeName(key).toUpperCase();
+  }
+  function getPortCoords(){
+    var fallback = {
+      cebu:[10.2929,123.9053], tagbilaran:[9.6496,123.8547], getafe:[10.1547,124.1590], ormoc:[11.0064,124.6075],
+      palompon:[11.0500,124.3833], maasin:[10.1336,124.8447], dumaguete:[9.3077,123.3054], surigao:[9.7833,125.4889], siquijor:[9.2142,123.5150]
+    };
+    try{ if(typeof PORT_COORDS !== 'undefined') return Object.assign({}, fallback, PORT_COORDS); }catch(e){}
+    return fallback;
+  }
+  function getPortLabels(){
+    var fallback = {cebu:'Cebu Pier 1',tagbilaran:'Tagbilaran',getafe:'Getafe',ormoc:'Ormoc',palompon:'Palompon',maasin:'Maasin',dumaguete:'Dumaguete',surigao:'Surigao',siquijor:'Siquijor'};
+    try{ if(typeof PORT_LABELS !== 'undefined') return Object.assign({}, fallback, PORT_LABELS); }catch(e){}
+    return fallback;
+  }
+  function colorFor(routeKey, dest){
+    var colors = {tagbilaran:'#22c55e',getafe:'#38bdf8',ormoc:'#f59e0b',palompon:'#a855f7',maasin:'#ef4444',dumaguete:'#14b8a6',surigao:'#f97316',siquijor:'#ec4899',cebu:'#60a5fa'};
+    return colors[dest] || colors[String(routeKey||'').split('_')[1]] || '#94a3b8';
+  }
+  function parseTimeMinutes(text){
+    var raw = String(text || '').trim().toUpperCase().replace(/\s+/g,'');
+    var m = raw.match(/^(\d{1,2})(?::(\d{2}))?(AM|PM)$/);
+    if(!m) return null;
+    var h = parseInt(m[1],10), min = parseInt(m[2] || '0',10);
+    if(h === 12) h = 0;
+    if(m[3] === 'PM') h += 12;
+    return h*60 + min;
+  }
+  function routePorts(routeKey, title){
+    var coords = getPortCoords();
+    var parts = String(routeKey||'').toLowerCase().split('_');
+    var from = parts[0] || 'cebu';
+    var to = parts[1] || 'tagbilaran';
+    if(!coords[from] || !coords[to]){
+      var lower = String(title||'').toLowerCase();
+      var ports = Object.keys(coords).filter(function(port){ return lower.indexOf(port) >= 0; });
+      if(ports.length >= 2){ from = ports[0]; to = ports[1]; }
+    }
+    if(!coords[from]) from = 'cebu';
+    if(!coords[to]) to = from === 'cebu' ? 'tagbilaran' : 'cebu';
+    return {from:from,to:to,fromCoord:coords[from],toCoord:coords[to]};
+  }
+  function buildEliteFeed(){
+    var keys = routeKeys();
+    var now = phNow();
+    var nowMin = now.getHours()*60 + now.getMinutes();
+    var rows = [];
+    keys.forEach(function(key){
+      var sched = DB.schedules[key];
+      if(!sched || !Array.isArray(sched.trips)) return;
+      var ports = routePorts(key, sched.title);
+      var travelMinutes = Math.max(35, parseInt(String(sched.travel||'').match(/\d+/)?.[0] || '120',10) * (String(sched.travel||'').indexOf('m')>=0 && String(sched.travel||'').indexOf('h')<0 ? 1 : 60));
+      sched.trips.forEach(function(trip, i){
+        var depMin = parseTimeMinutes(trip.dep);
+        var arrMin = parseTimeMinutes(trip.arr);
+        if(depMin == null) depMin = 360 + i*120;
+        var duration = arrMin != null ? arrMin - depMin : travelMinutes;
+        if(duration <= 0) duration += 1440;
+        var delta = nowMin - depMin;
+        var status = 'scheduled';
+        var statusText = 'Scheduled';
+        var progress = 0;
+        if(delta >= -20 && delta < 0){ status = 'soon'; statusText = 'Departing Soon'; progress = 4; }
+        else if(delta >= 0 && delta <= 15){ status = 'boarding'; statusText = 'Boarding'; progress = Math.min(18, Math.max(6, delta)); }
+        else if(delta > 15 && delta < duration){ status = 'active'; statusText = 'En Route'; progress = Math.min(92, Math.max(18, (delta/duration)*100)); }
+        else if(delta >= duration){ status = 'completed'; statusText = 'Completed'; progress = 100; }
+        else { progress = 0; }
+        var filteredDelta = delta < -240 ? delta + 1440 : delta;
+        var toKey = ports.to;
+        var routeColor = colorFor(key, toKey);
+        var lat = ports.fromCoord[0] + (ports.toCoord[0]-ports.fromCoord[0])*(progress/100);
+        var lng = ports.fromCoord[1] + (ports.toCoord[1]-ports.fromCoord[1])*(progress/100);
+        rows.push({
+          key:key+'_'+i+'_'+String(trip.dep).replace(/[^a-z0-9]/gi,''), routeKey:key, title:sched.title || routeName(key),
+          vessel:trip.vessel || 'OJ Vessel', dep:trip.dep || '', arr:trip.arr || '', remarks:trip.remarks || '',
+          from:ports.from, to:ports.to, fromCoord:ports.fromCoord, toCoord:ports.toCoord, lat:lat, lng:lng, color:routeColor,
+          status:status, statusText:statusText, progress:progress, delta:filteredDelta, travelMinutes:duration,
+          eta: arrMin != null ? trip.arr : Math.max(0, Math.round(duration - Math.max(0,delta))) + ' min',
+          sea: Math.abs(Math.sin((depMin+i*7)/111)) > .72 ? 'Moderate' : 'Calm',
+          load: Math.min(98, Math.max(18, Math.round((sched.trips.length*7 + i*11 + (progress/2)) % 100))),
+          berth: 'C' + ((i % 5)+1)
+        });
+      });
+    });
+    rows.sort(function(a,b){
+      function rank(v){ return v.status==='boarding'?0:v.status==='soon'?1:v.status==='active'?2:v.status==='scheduled'?3:4; }
+      var r = rank(a)-rank(b); if(r) return r;
+      return Math.abs(a.delta) - Math.abs(b.delta);
+    });
+    var search = String(v108.search || '').toLowerCase();
+    return rows.filter(function(v){
+      var routeOk = v108.selectedRoute === 'all' || v.routeKey === v108.selectedRoute;
+      var statusOk = v108.selectedStatus === 'all' || v.status === v108.selectedStatus;
+      var searchOk = !search || [v.vessel,v.title,v.dep,v.arr,v.statusText,v.remarks].join(' ').toLowerCase().indexOf(search)>=0;
+      return routeOk && statusOk && searchOk;
+    });
+  }
+  function ensureV108Styles(){
+    if(el('v108EliteStyles')) return;
+    var style = document.createElement('style');
+    style.id = 'v108EliteStyles';
+    style.textContent = `
+      .v108-glass{position:relative;overflow:hidden;border:1px solid rgba(56,189,248,.32);background:linear-gradient(135deg,rgba(2,6,23,.88),rgba(15,23,42,.74));box-shadow:0 0 30px rgba(56,189,248,.13),inset 0 0 20px rgba(244,63,94,.04)}
+      .v108-glass:before{content:'';position:absolute;inset:-60%;background:conic-gradient(from 180deg,transparent,rgba(56,189,248,.12),transparent,rgba(244,63,94,.10),transparent);animation:v108Rotate 18s linear infinite;pointer-events:none}.v108-glass>*{position:relative;z-index:1}@keyframes v108Rotate{to{transform:rotate(360deg)}}
+      .v108-hero{padding:14px;border-radius:18px;margin-bottom:12px}.v108-hero-title{display:flex;justify-content:space-between;gap:10px;align-items:center}.v108-hero h3{margin:0;color:var(--text);font-size:1.05rem}.v108-sub{font-size:.76rem;color:var(--text2);margin-top:5px}.v108-badge{border-radius:999px;padding:5px 9px;font-size:.62rem;font-weight:900;letter-spacing:.08em;background:rgba(56,189,248,.14);border:1px solid rgba(56,189,248,.34);color:#bae6fd;text-transform:uppercase}
+      .v108-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.v108-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.v108-grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.v108-kpi{padding:10px;border-radius:14px;text-align:center;background:rgba(255,255,255,.045);border:1px solid var(--border)}.v108-kpi b{display:block;color:var(--accent);font-size:1.05rem}.v108-kpi span{display:block;font-size:.58rem;color:var(--text3);text-transform:uppercase;letter-spacing:.06em}
+      .v108-tools{display:flex;flex-wrap:wrap;gap:7px;margin:10px 0}.v108-tools button{flex:1;justify-content:center;min-width:90px}.v108-controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.v108-controls label{font-size:.62rem;color:var(--text3);text-transform:uppercase}.v108-controls select,.v108-controls input{margin-top:3px;font-size:.78rem;padding:8px 9px}.v108-alert{font-size:.78rem;color:var(--text2);border:1px solid rgba(56,189,248,.22);background:rgba(56,189,248,.06);border-radius:12px;padding:10px;margin:8px 0}
+      .v108-ar-panel{display:grid;grid-template-columns:1fr;gap:8px}.v108-scan-row{padding:9px;border-radius:12px;background:rgba(255,255,255,.045);border:1px solid var(--border);font-size:.78rem}.v108-scan-row strong{color:var(--accent)}.v108-risk-low{color:#22c55e}.v108-risk-med{color:#f59e0b}.v108-risk-high{color:#ef4444}.v108-meter{height:7px;background:rgba(255,255,255,.09);border-radius:999px;overflow:hidden;margin-top:6px}.v108-meter span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#22c55e,#38bdf8,#f59e0b,#ef4444)}
+      .v108-map-shell{position:relative;border-radius:20px;overflow:hidden;border:1px solid rgba(56,189,248,.38);background:#020617;box-shadow:0 0 32px rgba(56,189,248,.14),inset 0 0 28px rgba(56,189,248,.06)}.v108-map-shell:before{content:'';position:absolute;inset:0;background:linear-gradient(rgba(56,189,248,.075) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,.075) 1px,transparent 1px);background-size:24px 24px;pointer-events:none;z-index:450;opacity:.5}.v108-map-shell:after{content:'V108 CEBU COMMAND';position:absolute;right:10px;top:10px;z-index:451;color:#bae6fd;background:rgba(2,6,23,.72);border:1px solid rgba(56,189,248,.35);border-radius:999px;padding:4px 8px;font-size:.58rem;letter-spacing:.12em;font-weight:900}
+      #liveMap{height:410px;border-radius:20px}.v108-map-controls{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}.v108-map-controls input,.v108-map-controls select{font-size:.78rem;padding:8px}.v108-board{display:grid;grid-template-columns:1fr;gap:8px;margin-top:10px;max-height:360px;overflow:auto}.v108-vessel-row{border-left:4px solid var(--accent);border-radius:14px;padding:10px;background:rgba(255,255,255,.045);border-top:1px solid var(--border);border-right:1px solid var(--border);border-bottom:1px solid var(--border);font-size:.78rem;cursor:pointer}.v108-vessel-row.active{outline:2px solid var(--accent);background:rgba(244,63,94,.12)}.v108-row-head{display:flex;justify-content:space-between;gap:8px}.v108-status{border-radius:999px;padding:2px 7px;font-size:.58rem;font-weight:900;text-transform:uppercase}.v108-status.boarding{background:rgba(34,197,94,.16);color:#86efac}.v108-status.soon{background:rgba(245,158,11,.16);color:#fcd34d}.v108-status.active{background:rgba(56,189,248,.16);color:#7dd3fc}.v108-status.scheduled{background:rgba(148,163,184,.16);color:#cbd5e1}.v108-status.completed{background:rgba(100,116,139,.16);color:#94a3b8}.v108-detail{font-size:.8rem;color:var(--text2);padding:11px;border-radius:14px;background:rgba(255,255,255,.045);border:1px solid var(--border);margin-top:10px}.v108-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:.68rem;color:var(--text2)}.v108-legend span{display:inline-flex;align-items:center;gap:5px}.v108-legend i{width:9px;height:9px;border-radius:999px;display:inline-block}.v108-ship{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;color:#fff;background:currentColor;box-shadow:0 0 0 5px rgba(56,189,248,.12),0 0 18px currentColor;animation:v108Pulse 1.8s ease-in-out infinite}.v108-ship:after{content:'⛴';filter:drop-shadow(0 1px 1px #000);font-size:14px}.v108-port{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;background:rgba(2,6,23,.85);border:1px solid rgba(56,189,248,.7);color:#bae6fd;box-shadow:0 0 12px rgba(56,189,248,.35)}@keyframes v108Pulse{50%{transform:scale(1.08)}}
+      .v108-popup{font-size:.78rem;color:#0f172a}.v108-popup b{color:#be123c}@media(max-width:430px){.v108-grid4{grid-template-columns:repeat(2,1fr)}.v108-controls,.v108-map-controls{grid-template-columns:1fr}#liveMap{height:360px}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  window.buildAR = function buildAR(){
+    ensureV108Styles();
+    var routes = routeKeys();
+    var routeOptions = routes.map(function(k){ return '<option value="'+esc(k)+'">'+esc(destinationLabel(k))+'</option>'; }).join('');
+    el('view-ar').innerHTML = `
+      <div class="card glow v108-glass">
+        <div class="v108-hero">
+          <div class="v108-hero-title"><h3>🛰️ AR Baggage Scanner Elite</h3><span id="arModeBadge" class="v108-badge">STANDBY</span></div>
+          <div class="v108-sub">Computer-vision baggage detection with route context, risk scoring, torch support, and calculator handoff.</div>
+        </div>
+        <div class="v108-controls">
+          <div><label>Route Context</label><select id="arRouteCtx">${routeOptions}</select></div>
+          <div><label>Class / Pax</label><select id="arClassCtx"><option value="tourist">Tourist 10kg</option><option value="business">Business 20kg</option></select></div>
+          <div><label>Passengers</label><input id="arPaxCtx" type="number" min="1" value="1"></div>
+          <div><label>Sensitivity <span id="arThresholdText">40%</span></label><input id="arThreshold" type="range" min="25" max="80" value="40" oninput="OJ_V108_AR_MAP.threshold=this.value/100;document.getElementById('arThresholdText').textContent=this.value+'%'"></div>
+        </div>
+        <div class="ar-wrap" style="border:1px solid rgba(56,189,248,.35);box-shadow:inset 0 0 28px rgba(56,189,248,.08)">
+          <video id="arVideo" class="ar-video" autoplay playsinline muted></video>
+          <div id="arOverlay" class="ar-overlay"></div>
+        </div>
+        <div class="v108-tools">
+          <button class="primary sm" onclick="startAR()">▶ Start</button>
+          <button class="sm" onclick="toggleARTorch()">🔦 Torch</button>
+          <button class="sm" onclick="captureARSnapshot()">📸 Snapshot</button>
+          <button class="sm" onclick="sendARToCalculator()">🧮 Use Weight</button>
+          <button class="sm" onclick="exportARReport()">⬇ Report</button>
+          <button class="danger sm" onclick="stopAR()">■ Stop</button>
+        </div>
+        <div class="v108-grid4">
+          <div class="v108-kpi"><b id="arCount">0</b><span>Objects</span></div>
+          <div class="v108-kpi"><b id="arWeight">0kg</b><span>Est. Load</span></div>
+          <div class="v108-kpi"><b id="arConfidence">--</b><span>Confidence</span></div>
+          <div class="v108-kpi"><b id="arRisk">--</b><span>Risk</span></div>
+        </div>
+        <div id="arStatus" class="v108-alert">Open on GitHub Pages directly, allow camera permission, then point at baggage. Estimates are visual guidance only.</div>
+        <div id="arScanList" class="v108-ar-panel"></div>
+      </div>`;
+    var routeSel = el('arRouteCtx'); if(routeSel) routeSel.value = v108.lastRoute || 'cebu_tagbilaran';
+  };
+
+  window.startAR = async function startAR(){
+    ensureV108Styles();
+    var status = el('arStatus'), badge = el('arModeBadge');
+    try{
+      stopAR(false);
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Camera is not supported on this browser.');
+      if(status) status.textContent = 'Requesting rear camera permission...';
+      if(badge) badge.textContent = 'CAMERA';
+      arStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}},audio:false});
+      var video = el('arVideo');
+      video.srcObject = arStream;
+      await video.play();
+      if(!window.cocoSsd) throw new Error('AI model library is unavailable. Check internet connection and reload.');
+      if(!arModel){
+        if(status) status.textContent = 'Loading baggage recognition model...';
+        if(badge) badge.textContent = 'AI LOAD';
+        arModel = await cocoSsd.load({base:'lite_mobilenet_v2'});
+      }
+      arRunning = true;
+      arDetectedItems = [];
+      v108.lastItems = [];
+      v108.lastRoute = el('arRouteCtx') ? el('arRouteCtx').value : 'cebu_tagbilaran';
+      if(badge) badge.textContent = 'SCANNING';
+      if(status) status.textContent = 'Scanner is live. Keep the full baggage shape inside the frame.';
+      notify('AR scanner elite active');
+      arLoop(performance.now());
+    }catch(e){
+      console.error(e);
+      if(status) status.textContent = e.message || 'Camera failed. Allow permission and open the site directly, not inside an app preview.';
+      if(badge) badge.textContent = 'ERROR';
+      notify('AR scanner could not start');
+    }
+  };
+
+  window.stopAR = function stopAR(showToast){
+    if(showToast === undefined) showToast = true;
+    arRunning = false;
+    if(arAnimationFrame) cancelAnimationFrame(arAnimationFrame);
+    arAnimationFrame = null;
+    if(arStream){ arStream.getTracks().forEach(function(t){ t.stop(); }); arStream = null; }
+    var video = el('arVideo'); if(video) video.srcObject = null;
+    var overlay = el('arOverlay'); if(overlay) overlay.innerHTML = '';
+    var badge = el('arModeBadge'); if(badge) badge.textContent = 'STANDBY';
+    if(showToast) notify('AR scanner stopped');
+  };
+
+  function estimateKgV108(pred, video){
+    var box = pred.bbox || [0,0,0,0];
+    var areaRatio = (box[2]*box[3]) / Math.max(1, (video.videoWidth||1)*(video.videoHeight||1));
+    var base = pred.class === 'suitcase' ? 30 : pred.class === 'backpack' ? 13 : 7;
+    var route = el('arRouteCtx') ? el('arRouteCtx').value : 'cebu_tagbilaran';
+    var classType = el('arClassCtx') ? el('arClassCtx').value : 'tourist';
+    var multiplier = /surigao|maasin|ormoc|palompon/.test(route) ? 1.12 : /getafe/.test(route) ? .88 : 1;
+    if(classType === 'business') multiplier *= 1.06;
+    return Math.max(2, Math.round((base + areaRatio*120) * multiplier));
+  }
+  function riskFromLoad(totalKg, pax, cls){
+    var allowance = (cls === 'business' ? 20 : 10) * Math.max(1,pax);
+    if(totalKg <= allowance) return {label:'LOW', cls:'v108-risk-low', pct:25};
+    if(totalKg <= allowance + 25) return {label:'MED', cls:'v108-risk-med', pct:62};
+    return {label:'HIGH', cls:'v108-risk-high', pct:95};
+  }
+  function renderV108Detections(predictions, video){
+    var overlay = el('arOverlay'), list = el('arScanList');
+    if(!overlay || !list) return;
+    overlay.innerHTML = '';
+    var rect = video.getBoundingClientRect();
+    var sx = rect.width / Math.max(1, video.videoWidth || rect.width);
+    var sy = rect.height / Math.max(1, video.videoHeight || rect.height);
+    arDetectedItems = predictions.map(function(p, i){
+      var b = p.bbox || [0,0,0,0];
+      var kg = estimateKgV108(p, video);
+      var conf = Math.round((p.score || 0)*100);
+      var box = document.createElement('div');
+      box.className = 'ar-box';
+      box.style.left = (b[0]*sx)+'px'; box.style.top = (b[1]*sy)+'px'; box.style.width = (b[2]*sx)+'px'; box.style.height = (b[3]*sy)+'px';
+      box.style.borderColor = conf >= 70 ? '#22c55e' : conf >= 50 ? '#f59e0b' : '#ef4444';
+      var label = document.createElement('div'); label.className = 'ar-label'; label.textContent = '#' + (i+1) + ' ' + p.class + ' • ' + kg + 'kg • ' + conf + '%';
+      box.appendChild(label); overlay.appendChild(box);
+      return {index:i+1,label:p.class,kg:kg,confidence:conf,route:el('arRouteCtx')?.value || 'cebu_tagbilaran'};
+    });
+    v108.lastItems = arDetectedItems.slice();
+    var totalKg = arDetectedItems.reduce(function(s,x){return s+x.kg;},0);
+    var avg = arDetectedItems.length ? Math.round(arDetectedItems.reduce(function(s,x){return s+x.confidence;},0)/arDetectedItems.length) : 0;
+    var pax = parseInt(el('arPaxCtx')?.value || '1',10) || 1;
+    var cls = el('arClassCtx')?.value || 'tourist';
+    var risk = riskFromLoad(totalKg,pax,cls);
+    if(el('arCount')) el('arCount').textContent = arDetectedItems.length;
+    if(el('arWeight')) el('arWeight').textContent = totalKg + 'kg';
+    if(el('arConfidence')) el('arConfidence').textContent = arDetectedItems.length ? avg+'%' : '--';
+    if(el('arRisk')) { el('arRisk').textContent = arDetectedItems.length ? risk.label : '--'; el('arRisk').className = arDetectedItems.length ? risk.cls : ''; }
+    if(el('arStatus')) el('arStatus').textContent = arDetectedItems.length ? 'Detected '+arDetectedItems.length+' object(s). Estimated '+totalKg+'kg. Risk '+risk.label+' based on route/class/passengers.' : 'Scanning... no baggage object above sensitivity threshold yet.';
+    list.innerHTML = arDetectedItems.length ? arDetectedItems.map(function(item){
+      return '<div class="v108-scan-row"><strong>#'+item.index+' '+esc(item.label).toUpperCase()+'</strong> • '+item.kg+'kg • '+item.confidence+'% confidence<div class="v108-meter"><span style="width:'+Math.min(100,item.confidence)+'%"></span></div></div>';
+    }).join('') : '<div class="v108-scan-row" style="color:var(--text3)">No baggage detected yet. Lower sensitivity if needed.</div>';
+    try{
+      var c = document.createElement('canvas'); c.width = video.videoWidth || 640; c.height = video.videoHeight || 360; c.getContext('2d').drawImage(video,0,0,c.width,c.height); v108.lastFrameDataUrl = c.toDataURL('image/jpeg',.72);
+    }catch(e){}
+  }
+
+  window.arLoop = async function arLoop(timestamp){
+    if(!arRunning) return;
+    var video = el('arVideo');
+    if(video && video.readyState >= 2 && arModel && (!v108.lastScan || timestamp - v108.lastScan > v108.scanInterval)){
+      v108.lastScan = timestamp;
+      try{
+        var all = await arModel.detect(video);
+        var allowed = ['suitcase','backpack','handbag'];
+        var baggage = all.filter(function(p){ return allowed.indexOf(p.class)>=0 && (p.score || 0) >= v108.threshold; }).sort(function(a,b){return b.score-a.score;}).slice(0,10);
+        renderV108Detections(baggage, video);
+      }catch(e){ console.error(e); if(el('arStatus')) el('arStatus').textContent = 'AI scan error. Stop and restart scanner.'; }
+    }
+    arAnimationFrame = requestAnimationFrame(arLoop);
+  };
+
+  window.toggleARTorch = async function toggleARTorch(){
+    try{
+      if(!arStream) return notify('Start camera first');
+      var track = arStream.getVideoTracks()[0];
+      var caps = track.getCapabilities ? track.getCapabilities() : {};
+      if(!caps.torch) return notify('Torch is not supported on this device');
+      var current = !!(track.getSettings && track.getSettings().torch);
+      await track.applyConstraints({advanced:[{torch:!current}]});
+      notify(!current ? 'Torch on' : 'Torch off');
+    }catch(e){ console.error(e); notify('Torch control failed'); }
+  };
+  window.captureARSnapshot = function captureARSnapshot(){
+    if(!v108.lastFrameDataUrl) return notify('Start scan first');
+    var a = document.createElement('a'); a.href = v108.lastFrameDataUrl; a.download = 'ar_baggage_snapshot_'+new Date().toISOString().slice(0,19).replace(/:/g,'-')+'.jpg'; a.click();
+  };
+  window.exportARReport = function exportARReport(){
+    var total = (v108.lastItems||[]).reduce(function(s,x){return s+x.kg;},0);
+    var report = {
+      app:'OceanJet PortDesk', module:'V108 AR Scanner Elite', time:new Date().toLocaleString(),
+      route:el('arRouteCtx')?.value || v108.lastRoute, classType:el('arClassCtx')?.value || 'tourist', passengers:parseInt(el('arPaxCtx')?.value || '1',10)||1,
+      totalEstimatedKg:total, items:v108.lastItems || [], note:'Visual estimate only. Official baggage weight should still use scale reading.'
+    };
+    var blob = new Blob([JSON.stringify(report,null,2)],{type:'application/json'});
+    var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ar_baggage_report_'+new Date().toISOString().slice(0,10)+'.json'; a.click(); notify('AR report exported');
+  };
+  window.sendARToCalculator = function sendARToCalculator(){
+    var total = (v108.lastItems||[]).reduce(function(s,x){return s+x.kg;},0);
+    if(!total) return notify('No detected weight to send');
+    showView && showView('calculator');
+    setTimeout(function(){
+      if(el('calcRoute') && el('arRouteCtx')) el('calcRoute').value = el('arRouteCtx').value;
+      if(el('calcClass') && el('arClassCtx')) el('calcClass').value = el('arClassCtx').value;
+      if(el('pax') && el('arPaxCtx')) el('pax').value = el('arPaxCtx').value;
+      if(el('weight')) el('weight').value = total;
+      notify('AR estimated weight sent to calculator');
+    },120);
+  };
+
+  window.buildMap = function buildMap(){
+    ensureV108Styles();
+    var keys = routeKeys();
+    var routeOptions = '<option value="all">All Cebu routes</option>' + keys.map(function(k){return '<option value="'+esc(k)+'">'+esc(routeName(k))+'</option>';}).join('');
+    v108.feed = buildEliteFeed();
+    var counts = v108.feed.reduce(function(acc,v){ acc[v.status]=(acc[v.status]||0)+1; return acc; },{});
+    el('view-map').innerHTML = `
+      <div class="card glow v108-glass">
+        <div class="v108-hero">
+          <div class="v108-hero-title"><h3>🛰️ Cebu Command Map Elite</h3><span class="v108-badge">LIVE OPS</span></div>
+          <div class="v108-sub">Futuristic Cebu vessel board with route intelligence, ETA simulation, sea-state context, and exportable ops manifest.</div>
+        </div>
+        <div class="v108-grid4">
+          <div class="v108-kpi"><b>${v108.feed.length}</b><span>Visible</span></div>
+          <div class="v108-kpi"><b>${counts.boarding||0}</b><span>Boarding</span></div>
+          <div class="v108-kpi"><b>${counts.active||0}</b><span>En Route</span></div>
+          <div class="v108-kpi"><b>${counts.soon||0}</b><span>Soon</span></div>
+        </div>
+        <div class="v108-map-controls">
+          <select id="v108RouteFilter" onchange="OJ_V108_AR_MAP.selectedRoute=this.value;refreshLiveMap(false)">${routeOptions}</select>
+          <select id="v108StatusFilter" onchange="OJ_V108_AR_MAP.selectedStatus=this.value;refreshLiveMap(false)"><option value="all">All statuses</option><option value="boarding">Boarding</option><option value="soon">Departing soon</option><option value="active">En route</option><option value="scheduled">Scheduled</option><option value="completed">Completed</option></select>
+          <input id="v108Search" placeholder="Search vessel, route, time..." oninput="OJ_V108_AR_MAP.search=this.value;refreshLiveMap(false)">
+          <button class="sm" onclick="resetMapFilters()">Reset Filters</button>
+        </div>
+        <div class="v108-map-shell"><div id="liveMap"></div></div>
+        <div class="v108-legend"><span><i style="background:#22c55e"></i>Boarding</span><span><i style="background:#f59e0b"></i>Soon</span><span><i style="background:#38bdf8"></i>En route</span><span><i style="background:#94a3b8"></i>Scheduled</span><span><i style="background:#64748b"></i>Completed</span></div>
+        <div class="v108-tools"><button class="primary sm" onclick="refreshLiveMap()">↻ Refresh</button><button class="sm" onclick="focusNextVessel()">⚓ Focus Next</button><button class="sm" onclick="toggleMapAutoFocus()">🔁 Auto Focus</button><button class="sm" onclick="centerCebuMap()">⌖ Cebu Center</button><button class="sm" onclick="exportMapManifest()">⬇ Export</button></div>
+        <div id="v108VesselDetails" class="v108-detail">Select a vessel marker or row to open vessel intelligence.</div>
+        <div id="vesselStatusList" class="v108-board">${v108.feed.length ? v108.feed.slice(0,14).map(renderV108VesselRow).join('') : '<div class="v108-vessel-row">No Cebu vessel schedule found for filters.</div>'}</div>
+      </div>`;
+    if(el('v108RouteFilter')) el('v108RouteFilter').value = v108.selectedRoute;
+    if(el('v108StatusFilter')) el('v108StatusFilter').value = v108.selectedStatus;
+    if(el('v108Search')) el('v108Search').value = v108.search;
+    setTimeout(initMap,120);
+  };
+  function renderV108VesselRow(v){
+    return '<div class="v108-vessel-row '+(mapFocusedVesselKey===v.key?'active':'')+'" data-key="'+esc(v.key)+'" onclick="selectVessel(\''+esc(v.key)+'\')" style="border-left-color:'+v.color+'"><div class="v108-row-head"><strong>'+esc(v.vessel)+'</strong><span class="v108-status '+esc(v.status)+'">'+esc(v.statusText)+'</span></div><div>'+esc(v.title)+' • '+esc(v.dep)+' → '+esc(v.arr || v.eta)+'</div><div style="color:var(--text3);font-size:.72rem">Berth '+esc(v.berth)+' • Sea '+esc(v.sea)+' • Load '+esc(v.load)+'%'+(v.remarks?' • '+esc(v.remarks):'')+'</div><div class="v108-meter"><span style="width:'+Math.round(v.progress)+'%;background:linear-gradient(90deg,'+v.color+',#38bdf8)"></span></div></div>';
+  }
+  function shipIcon(v){
+    var color = v.status==='boarding'?'#22c55e':v.status==='soon'?'#f59e0b':v.status==='active'?'#38bdf8':v.status==='completed'?'#64748b':'#94a3b8';
+    return L.divIcon({className:'',html:'<div class="v108-ship" style="color:'+color+'"></div>',iconSize:[28,28],iconAnchor:[14,14],popupAnchor:[0,-14]});
+  }
+  function portIcon(){ return L.divIcon({className:'',html:'<div class="v108-port">⚓</div>',iconSize:[24,24],iconAnchor:[12,12],popupAnchor:[0,-12]}); }
+  window.initMap = function initMap(){
+    ensureV108Styles();
+    v108.feed = buildEliteFeed();
+    if(!window.L){ var lm=el('liveMap'); if(lm) lm.innerHTML='<div style="padding:18px;color:var(--text2)">Map tiles unavailable. Vessel board remains active.</div>'; return; }
+    if(map){ try{ map.remove(); }catch(e){} map = null; }
+    if(typeof mapLiveTimer !== 'undefined' && mapLiveTimer){ clearInterval(mapLiveTimer); mapLiveTimer = null; }
+    if(v108.mapTickTimer){ clearInterval(v108.mapTickTimer); v108.mapTickTimer = null; }
+    map = L.map('liveMap',{zoomControl:true,attributionControl:true,preferCanvas:true}).setView([10.25,124.15],7);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+    vesselRoutesLayer = L.layerGroup().addTo(map);
+    vesselMarkers = []; v108.markers = [];
+    var bounds = [], ports = {}, labels = getPortLabels();
+    v108.feed.forEach(function(v){
+      [v.from,v.to].forEach(function(port){
+        if(ports[port]) return; ports[port]=1;
+        var coord = getPortCoords()[port]; if(!coord) return;
+        L.marker(coord,{icon:portIcon()}).addTo(vesselRoutesLayer).bindPopup('<div class="v108-popup"><b>'+esc(labels[port]||port)+'</b><br>Port Node</div>');
+        bounds.push(coord);
+      });
+      L.polyline([v.fromCoord,v.toCoord],{color:v.color,weight:v.status==='active'?5:3,opacity:v.status==='completed'?.25:.78,dashArray:v.status==='active'?null:'8,10'}).addTo(vesselRoutesLayer);
+      var marker = L.marker([v.lat,v.lng],{icon:shipIcon(v)}).addTo(vesselRoutesLayer);
+      marker.bindPopup('<div class="v108-popup"><b>'+esc(v.vessel)+'</b><br>'+esc(v.title)+'<br>'+esc(v.dep)+' → '+esc(v.arr||v.eta)+'<br>Status: '+esc(v.statusText)+'<br>Berth '+esc(v.berth)+' • Sea '+esc(v.sea)+'</div>');
+      marker.bindTooltip(v.vessel+' • '+v.statusText,{direction:'top'});
+      marker.on('click',function(){ selectVessel(v.key,false); });
+      var entry = {marker:marker,data:v}; vesselMarkers.push(entry); v108.markers.push(entry); bounds.push([v.lat,v.lng],v.fromCoord,v.toCoord);
+    });
+    if(bounds.length) map.fitBounds(bounds,{padding:[30,30]});
+    setTimeout(function(){ try{ map.invalidateSize(); }catch(e){} },250);
+    mapLiveTimer = setInterval(updateLiveMapPositions,3600);
+  };
+  window.refreshLiveMap = function refreshLiveMap(showToast){
+    if(showToast === undefined) showToast = true;
+    v108.feed = buildEliteFeed();
+    var list = el('vesselStatusList'); if(list) list.innerHTML = v108.feed.length ? v108.feed.slice(0,14).map(renderV108VesselRow).join('') : '<div class="v108-vessel-row">No Cebu vessel schedule found for filters.</div>';
+    initMap();
+    if(showToast) notify('Cebu command map refreshed');
+  };
+  window.selectVessel = function selectVessel(key, pan){
+    if(pan === undefined) pan = true;
+    mapFocusedVesselKey = key;
+    var feed = v108.feed.length ? v108.feed : buildEliteFeed();
+    var selected = feed.find(function(v){return v.key===key;}) || (vesselMarkers||[]).map(function(m){return m.data;}).find(function(v){return v.key===key;});
+    if(el('v108VesselDetails') && selected){
+      el('v108VesselDetails').innerHTML = '<strong style="color:var(--accent)">'+esc(selected.vessel)+'</strong><br>'+esc(selected.title)+'<br>Status: <b>'+esc(selected.statusText)+'</b> • '+esc(selected.dep)+' → '+esc(selected.arr||selected.eta)+'<br>Berth '+esc(selected.berth)+' • Sea '+esc(selected.sea)+' • Load '+esc(selected.load)+'%<br>Route intelligence: '+esc(getPortLabels()[selected.from]||selected.from)+' → '+esc(getPortLabels()[selected.to]||selected.to)+' • Progress '+Math.round(selected.progress)+'%'+(selected.remarks?'<br>Note: '+esc(selected.remarks):'');
+    }
+    document.querySelectorAll('.v108-vessel-row').forEach(function(row){ row.classList.toggle('active', row.dataset.key === key); });
+    var markerEntry = (vesselMarkers||[]).find(function(m){return m.data.key===key;});
+    if(markerEntry && map && pan){ map.setView(markerEntry.marker.getLatLng(),10,{animate:true}); markerEntry.marker.openPopup(); }
+  };
+  window.focusNextVessel = function focusNextVessel(){
+    if(!vesselMarkers || !vesselMarkers.length) return notify('No visible vessels');
+    var entry = vesselMarkers.find(function(m){return ['boarding','soon','active'].indexOf(m.data.status)>=0;}) || vesselMarkers[0];
+    selectVessel(entry.data.key,true);
+  };
+  window.toggleMapAutoFocus = function toggleMapAutoFocus(){
+    v108.autoFocus = !v108.autoFocus;
+    if(v108.autoFocus){
+      if(v108.autoFocusTimer) clearInterval(v108.autoFocusTimer);
+      v108.autoFocusTimer = setInterval(function(){
+        if(!vesselMarkers || !vesselMarkers.length) return;
+        v108.autoFocusIndex = (v108.autoFocusIndex + 1) % vesselMarkers.length;
+        selectVessel(vesselMarkers[v108.autoFocusIndex].data.key,true);
+      },5200);
+      notify('Auto focus on'); focusNextVessel();
+    }else{
+      if(v108.autoFocusTimer) clearInterval(v108.autoFocusTimer); v108.autoFocusTimer=null; notify('Auto focus off');
+    }
+  };
+  window.centerCebuMap = function centerCebuMap(){ if(map) map.setView([10.2929,123.9053],10,{animate:true}); };
+  window.resetMapFilters = function resetMapFilters(){ v108.selectedRoute='all'; v108.selectedStatus='all'; v108.search=''; buildMap(); };
+  window.updateLiveMapPositions = function updateLiveMapPositions(){
+    if(!vesselMarkers || !vesselMarkers.length) return;
+    vesselMarkers.forEach(function(entry){
+      var v = entry.data, ll = entry.marker.getLatLng();
+      var nudge = v.status==='active'?.045:v.status==='boarding'?.018:.010;
+      entry.marker.setLatLng([ll.lat + (v.toCoord[0]-ll.lat)*nudge + (Math.random()-.5)*.003, ll.lng + (v.toCoord[1]-ll.lng)*nudge + (Math.random()-.5)*.003]);
+    });
+  };
+  window.exportMapManifest = function exportMapManifest(){
+    var feed = v108.feed.length ? v108.feed : buildEliteFeed();
+    if(!feed.length) return notify('No map rows to export');
+    var rows = [['Vessel','Route','Departure','Arrival/ETA','Status','Berth','Sea','Load','Progress','Remarks']];
+    feed.forEach(function(v){ rows.push([v.vessel,v.title,v.dep,v.arr||v.eta,v.statusText,v.berth,v.sea,v.load+'%',Math.round(v.progress)+'%',v.remarks]); });
+    var csv = rows.map(function(r){ return r.map(function(c){return '"'+String(c||'').replace(/"/g,'""')+'"';}).join(','); }).join('\n');
+    var blob = new Blob([csv],{type:'text/csv'}); var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'cebu_command_map_v108_'+new Date().toISOString().slice(0,10)+'.csv'; a.click(); notify('Map manifest exported');
+  };
+})();
+</script>
 
 <script>
 // V100 fare advisory patch: scheduled fare reduction effective June 8, 2026.
